@@ -1,3 +1,5 @@
+import { defineConfig, type ConfigContribution } from './config'
+
 /**
  * 平台定义契约：每个平台的自描述单元，是「每平台一个包」的基础。
  *
@@ -18,6 +20,36 @@ export interface PlatformDefinition {
   }
   /** 是否默认优先专属 API（可被 config.platformDedicatedFirst 覆盖） */
   dedicatedFirst?: boolean
+  /** 中文名（用于配置项描述与界面展示） */
+  label?: string
   /** 解析失败时的平台特定引导提示 */
   hints?: string[]
+}
+
+/**
+ * 由平台定义聚合出「平台相关配置」（平台开关 / 专属 API 优先）。
+ * koishi / cli 兼容层据此动态生成配置，无需硬编码平台列表。
+ */
+export function platformConfigContributions(defs: PlatformDefinition[]): ConfigContribution[] {
+  return [
+    defineConfig({
+      group: '平台开关',
+      fields: [
+        {
+          key: 'platformEnabled', type: 'object', description: '各平台解析开关',
+          fields: defs.map(d => ({ key: d.type, type: 'boolean' as const, default: true, description: d.label || d.type })),
+        },
+      ],
+    }),
+    defineConfig({
+      group: 'API 与平台',
+      description: '优先使用专属 API',
+      fields: [
+        {
+          key: 'platformDedicatedFirst', type: 'object', description: '优先使用专属 API',
+          fields: defs.map(d => ({ key: d.type, type: 'boolean' as const, default: d.dedicatedFirst ?? false, description: d.label || d.type })),
+        },
+      ],
+    }),
+  ]
 }
