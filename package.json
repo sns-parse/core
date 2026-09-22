@@ -1,6 +1,6 @@
 {
   "name": "@sns-parse/core",
-  "version": "0.1.0",
+  "version": "0.2.0-alpha.1+upstream.1.6.7",
   "description": "sns-parse 核心契约与宿主抽象：类型、可注入日志、Host、发送层契约、平台定义",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
