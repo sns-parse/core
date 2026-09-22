@@ -71,3 +71,30 @@ export function mergeConfigContributions(lists: ConfigContribution[][]): ConfigC
   }
   return out
 }
+
+function applyFieldDefault(target: Record<string, any>, f: ConfigField): void {
+  if (f.type === 'object' && f.fields) {
+    const obj: Record<string, any> = {}
+    for (const sub of f.fields) applyFieldDefault(obj, sub)
+    // object 自身 default 与子字段 default 合并（子字段优先）
+    target[f.key] = isPlainObject(f.default) ? { ...f.default, ...obj } : obj
+    return
+  }
+  if (f.default !== undefined) target[f.key] = f.default
+}
+
+function isPlainObject(v: any): v is Record<string, any> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+}
+
+/**
+ * 由配置声明提取默认值表（CLI / 无 Schema 宿主用）：
+ * 平台开关等 object 字段展开为逐键默认值（如 { douyin: true, ... }）。
+ */
+export function defaultsFromContributions(contribs: ConfigContribution[]): Record<string, any> {
+  const out: Record<string, any> = {}
+  for (const c of contribs) {
+    for (const f of c.fields) applyFieldDefault(out, f)
+  }
+  return out
+}

@@ -1,7 +1,7 @@
 {
   "name": "@sns-parse/core",
-  "version": "0.3.0-alpha.1+upstream.1.6.7",
-  "description": "sns-parse 核心契约与宿主抽象：类型、可注入日志、Host、发送层契约、平台定义",
+  "version": "0.4.0-alpha.1+upstream.1.6.7",
+  "description": "sns-parse 核心：契约、宿主抽象、配置 DSL 与解析引擎（fetcher/parser/翻译/X 原生解析/合并/GIF/TLS 指纹客户端）",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
@@ -11,7 +11,8 @@
   "scripts": {
     "build": "tsc",
     "clean": "rimraf lib",
-    "prepublishOnly": "npm run build"
+    "test": "tsx test/engine.test.ts",
+    "prepublishOnly": "tsc"
   },
   "keywords": [
     "sns-parse",
@@ -21,9 +22,19 @@
     "koishi"
   ],
   "devDependencies": {
+    "@char46/tlsget-rs": "^1.0.0",
     "@types/node": "^20.11.0",
     "rimraf": "^5.0.5",
+    "tsx": "^4.23.15",
     "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "axios": "^1.16.1",
+    "https-proxy-agent": "^9.1.0"
+  },
+  "optionalDependencies": {
+    "@char46/tlsget-rs": "^1.0.0",
+    "ffmpeg-static": "^5.2.0"
   },
   "publishConfig": {
     "access": "public",
@@ -35,5 +46,6 @@
   },
   "engines": {
     "node": ">=16.0.0"
-  }
+  },
+  "packageManager": "pnpm@12.3.4"
 }
