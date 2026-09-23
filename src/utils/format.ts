@@ -25,10 +25,15 @@ export function formatPublishTime(ms: number): string {
 
 export function generateFormattedText(p: ParsedData, format: string, index?: number, total?: number): string {
   const imageCount = p.images.length || p.live_photo.length
+  // 纯文字作品（type=text）：正文即内容。模板含 ${正文} 时启用新语义——
+  // 正文=desc、简介置空（自动隐藏），避免把正文标成「简介」；旧模板保持原行为。
+  const plainTextWork = p.type === 'text' && !!p.desc
+  const wantsBody = plainTextWork && format.includes('${正文}')
   const vars: Record<string, string> = {
     '标题': p.title,
     '作者': p.author,
-    '简介': p.desc,
+    '简介': wantsBody ? '' : p.desc,
+    '正文': plainTextWork ? p.desc : '',
     '视频时长': p.duration > 0 ? formatDuration(p.duration) : '',
     '点赞数': String(p.like),
     '收藏数': String(p.collect),

@@ -176,13 +176,14 @@ function deepFindLongestText(node: any): string | undefined {
   return best
 }
 
-/** 清理描述中的 t.co 短链（Twitter 自动附加的截断 URL，无实际内容价值） */
+/** 清理描述中的 t.co 短链（Twitter 自动附加的截断 URL，无实际内容价值）。
+ *  注意保留段落换行：仅折叠水平空白，≥3 连续换行压成空行一档。 */
 function cleanDesc(text: string): string {
   if (!text) return text
-  // 移除末尾的 t.co URL（含可能的空格前导）
-  let cleaned = text.replace(/\s*https?:\/\/t\.co\/[A-Za-z0-9]+(?:\?[^\s]*)?\s*$/g, '').trim()
-  // 移除中间出现的 t.co URL（较少见，但推文内嵌的缩短链）
-  cleaned = cleaned.replace(/\s*https?:\/\/t\.co\/[A-Za-z0-9]+/g, ' ').replace(/\s{2,}/g, ' ').trim()
+  // 去掉全部 t.co URL（文末自动附加 + 文中内嵌）
+  let cleaned = text.replace(/https?:\/\/t\.co\/[A-Za-z0-9]+(?:\?[^\s]*)?/g, '')
+  // 仅折叠空格/制表（不动换行）；去掉行首尾空格；连续空行压成一个空行
+  cleaned = cleaned.replace(/[^\S\n]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim()
   return cleaned || text
 }
 

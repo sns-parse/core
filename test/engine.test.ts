@@ -186,6 +186,7 @@ check('默认值表含引擎关键键', () => {
   assert.equal(d.primaryApiUrl, 'https://api.bugpk.com/api/short_videos')
   assert.ok(Array.isArray(d.customApis) && d.customApis.length === 0)
   assert.ok(typeof d.unifiedMessageFormat === 'string' && d.unifiedMessageFormat.includes('${标题}'))
+  assert.ok(d.unifiedMessageFormat.includes('${正文}'))
   assert.ok(typeof d.globalFieldMapping === 'string' && d.globalFieldMapping.includes('"music_url"'))
 })
 check('密钥字段带 secret role（config-io 脱敏同源）', () => {
@@ -278,6 +279,21 @@ const graphqlNewShape = (async () => ({
   assert.equal(p4.play, 76284)
   passed++
   console.log('  ✓ 新版用户/笔记结构深度提取（作者/头像/全文/统计）')
+  // 段落换行保留 + t.co 短链剥离
+  const synHttp2 = {
+    get: async () => ({
+      data: {
+        __typename: 'Tweet',
+        user: { screen_name: 'a' },
+        text: '第一段\n\n第二段 https://t.co/AbCdEf1234\n\n第三段',
+        lang: 'zh',
+      },
+    }),
+  } as any
+  const p5 = await parseTwitter('https://x.com/a/status/2102260920382541000', synHttp2)
+  assert.equal(p5.desc, '第一段\n\n第二段\n\n第三段')
+  passed++
+  console.log('  ✓ 段落换行保留 + t.co 短链剥离')
 
   console.log(`\n全部通过：${passed} 项`)
 })().catch(e => { console.error('✗', e); process.exit(1) })
