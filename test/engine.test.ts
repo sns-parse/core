@@ -223,6 +223,32 @@ const graphqlFull = (async () => ({
     },
   },
 })) as any
+const graphqlNewShape = (async () => ({
+  status: 200,
+  data: {
+    data: {
+      tweetResult: {
+        result: {
+          __typename: 'Tweet',
+          legacy: { full_text: '一个人被大伙跨越了结界魔法般的世界。world, heaven,', lang: 'zh', favorite_count: 988, retweet_count: 79, bookmark_count: 236 },
+          note_tweet: { note_results: { result: { text: 'FULL-NEW-SHAPE-全文' } } },
+          views: { count: '76284' },
+          core: {
+            user_results: {
+              result: {
+                __typename: 'User',
+                core: { name: '空言', screen_name: '__soragoto__' },
+                avatar: { image_url: 'https://pbs.twimg.com/profile_images/1/y_400x400.jpg' },
+                profile_bio: { description: 'bio' },
+                legacy: { followers_count: 1234 },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+})) as any
 ;(async () => {
   // 无登录态：syndication 截断文本直接返回（不抛错）
   const p1 = await parseTwitter(SYN_URL, synHttp)
@@ -240,6 +266,18 @@ const graphqlFull = (async () => ({
   assert.ok(p3.desc.includes('world, heaven,'))
   passed++
   console.log('  ✓ GraphQL 失败回退截断结果')
+  // 新版 GraphQL 结构：用户字段 core/avatar/profile_bio、笔记正文位置漂移 → 深度提取兜底
+  const p4 = await parseTwitter(SYN_URL, synHttp, { authToken: 't', ct0: 'c' }, graphqlNewShape)
+  assert.equal(p4.desc, 'FULL-NEW-SHAPE-全文')
+  assert.equal(p4.author, '空言')
+  assert.equal(p4.uid, '__soragoto__')
+  assert.ok(p4.avatar.includes('profile_images'))
+  assert.equal(p4.author_followers, 1234)
+  assert.equal(p4.like, 988)
+  assert.equal(p4.collect, 236)
+  assert.equal(p4.play, 76284)
+  passed++
+  console.log('  ✓ 新版用户/笔记结构深度提取（作者/头像/全文/统计）')
 
   console.log(`\n全部通过：${passed} 项`)
 })().catch(e => { console.error('✗', e); process.exit(1) })

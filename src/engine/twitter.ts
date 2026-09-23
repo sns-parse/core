@@ -150,6 +150,32 @@ function pick(...vals: any[]): any {
   return ''
 }
 
+/** BFS 深取子树中第一个非空的指定键值（X GraphQL 用户结构随版本漂移：legacy ↔ core/avatar） */
+function deepPick(node: any, key: string): any {
+  const queue = [node]
+  while (queue.length) {
+    const cur = queue.shift()
+    if (!cur || typeof cur !== 'object') continue
+    const v = cur[key]
+    if (v !== undefined && v !== null && v !== '') return v
+    for (const k of Object.keys(cur)) queue.push(cur[k])
+  }
+  return undefined
+}
+
+/** BFS 找子树中最长的 text 字符串（笔记正文位置随版本漂移，取最长以避开截断副本） */
+function deepFindLongestText(node: any): string | undefined {
+  let best: string | undefined
+  const queue = [node]
+  while (queue.length) {
+    const cur = queue.shift()
+    if (!cur || typeof cur !== 'object') continue
+    if (typeof cur.text === 'string' && cur.text && (!best || cur.text.length > best.length)) best = cur.text
+    for (const k of Object.keys(cur)) queue.push(cur[k])
+  }
+  return best
+}
+
 /** 清理描述中的 t.co 短链（Twitter 自动附加的截断 URL，无实际内容价值） */
 function cleanDesc(text: string): string {
   if (!text) return text
@@ -276,9 +302,10 @@ function mapGraphql(rawResult: any): ParsedData {
   }
   const legacy = result.legacy || {}
   const user = result.core?.user_results?.result
-  const ulegacy = user?.legacy || {}
-  // 长推（note tweet）：legacy.full_text 是截断版，全文在 note_tweet.note_results.note.text
-  const text = String(pick(result.note_tweet?.note_results?.note?.text, legacy.full_text, ''))
+  const ures = user || {}
+  // 长推（note tweet）：legacy.full_text 是截断版，全文在 note_tweet 子树（位置随版本漂移，深取最长 text）
+  // 用户字段同理：legacy ↔ core/avatar/profile_bio 漂移，深取键值
+  const text = String(pick(deepFindLongestText(result.note_tweet), legacy.full_text, ''))
   const p = baseParsed()
 
   const media = Array.isArray(legacy.entities?.media) ? legacy.entities.media : []
@@ -316,17 +343,17 @@ function mapGraphql(rawResult: any): ParsedData {
   p.title = cleaned.slice(0, 100)
   p.desc = cleaned
   p.lang = legacy.lang ? String(legacy.lang) : undefined
-  p.author = String(pick(ulegacy.name, ulegacy.screen_name, ''))
-  p.uid = String(pick(ulegacy.screen_name, user?.rest_id, ''))
-  p.avatar = String(pick(ulegacy.profile_image_url_https, ''))
+  p.author = String(pick(deepPick(ures, 'name'), ''))
+  p.uid = String(pick(deepPick(ures, 'screen_name'), user?.rest_id, ''))
+  p.avatar = String(pick(deepPick(ures, 'profile_image_url_https'), deepPick(ures, 'image_url'), ''))
   p.like = Number(pick(legacy.favorite_count, 0)) || 0
   p.comment = Number(pick(legacy.reply_count, 0)) || 0
   p.share = Number(pick(legacy.retweet_count, 0)) || 0
   p.play = Number(pick(result.views?.count, 0)) || 0
   p.collect = Number(pick(legacy.bookmark_count, 0)) || 0
   if (legacy.created_at) { const t = Date.parse(legacy.created_at); if (!isNaN(t)) p.publishTime = t }
-  p.author_followers = Number(pick(ulegacy.followers_count, 0)) || 0
-  p.author_signature = String(pick(ulegacy.description, ''))
+  p.author_followers = Number(pick(deepPick(ures, 'followers_count'), 0)) || 0
+  p.author_signature = String(pick(deepPick(ures, 'description'), ''))
   if (p.title && p.desc && p.desc.startsWith(p.title)) p.title = ''
   return p
 }
