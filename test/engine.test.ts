@@ -10,6 +10,8 @@ import { platformConfigContributions } from '../src/platform'
 import { redactConfig, createConfigEnvelope, parseConfigInput, mergeConfig, MASK } from '../src/engine/config-io'
 import { shouldSkipTranslate, langName } from '../src/engine/translate'
 import { buildAuthHeaders, getPlatformConfig } from '../src/engine/platform-config'
+import { engineConfigContributions } from '../src/engine/config'
+import { parseTwitter } from '../src/engine/twitter'
 import { linkTypeParser } from '../src/utils/url'
 
 let passed = 0
@@ -158,4 +160,86 @@ check('裸配置对象 JSON 可导入', () => {
   assert.equal(r.config.timeout, 123)
 })
 
-console.log(`\n全部通过：${passed} 项`)
+/* ---------- 引擎配置声明 ---------- */
+console.log('engineConfigContributions')
+check('组序与组名稳定（koishi UI 按「发送策略」后插入动态声明）', () => {
+  assert.deepEqual(engineConfigContributions().map(c => c.group), [
+    '消息格式', '媒体发送', '音乐语音（需 silk 和 ffmpeg）', 'GIF 转换', '性能与限制', '发送策略',
+    '网络与请求', '发送与重试', '缓存与临时文件', 'API 与平台', '界面文本',
+  ])
+})
+check('默认值表含引擎关键键', () => {
+  const d = defaultsFromContributions(engineConfigContributions())
+  assert.equal(d.sendStrategy, 'single')
+  assert.equal(d.singleSendMaxImages, 10)
+  assert.equal(d.timeout, 180000)
+  assert.equal(d.videoSendTimeout, 180000)
+  assert.equal(d.proxy.enabled, false)
+  assert.equal(d.proxy.protocol, 'http')
+  assert.equal(d.retryTimes, 3)
+  assert.equal(d.enableDeduplication, true)
+  assert.equal(d.cacheTTL, 600)
+  assert.equal(d.maxDescLength, 200)
+  assert.equal(d.maxConcurrent, 3)
+  assert.equal(d.tweetTranslateLang, 'zh')
+  assert.equal(d.tweetTranslateEnabled, true)
+  assert.equal(d.primaryApiUrl, 'https://api.bugpk.com/api/short_videos')
+  assert.ok(Array.isArray(d.customApis) && d.customApis.length === 0)
+  assert.ok(typeof d.unifiedMessageFormat === 'string' && d.unifiedMessageFormat.includes('${标题}'))
+  assert.ok(typeof d.globalFieldMapping === 'string' && d.globalFieldMapping.includes('"music_url"'))
+})
+check('密钥字段带 secret role（config-io 脱敏同源）', () => {
+  const secrets = engineConfigContributions().flatMap(c => c.fields).filter(f => f.role === 'secret').map(f => f.key)
+  assert.deepEqual(secrets.sort(), ['apiKey', 'twitterAuthToken', 'twitterCt0'])
+})
+
+/* ---------- X 长推全文（note tweet） ---------- */
+console.log('twitter note-tweet 全文回退')
+const SYN_URL = 'https://x.com/__soragoto__/status/2102260920382541939'
+const synHttp = {
+  get: async () => ({
+    data: {
+      __typename: 'Tweet',
+      user: { screen_name: '__soragoto__', name: 'そら' },
+      text: '一个人被大伙跨越了结界魔法般的世界。world, heaven,',
+      lang: 'zh',
+      note_tweet: { id: 'Tm90ZVR3ZWV0UmVzdWx0czoyMTAyMjYwOTIwMjg2MDgxMDI0' },
+      display_text_range: [0, 162],
+    },
+  }),
+} as any
+const graphqlFull = (async () => ({
+  status: 200,
+  data: {
+    data: {
+      tweetResult: {
+        result: {
+          __typename: 'Tweet',
+          legacy: { full_text: '一个人被大伙跨越了结界魔法般的世界。world, heaven,', lang: 'zh', favorite_count: 1 },
+          note_tweet: { note_results: { note: { text: 'FULL-NOTE-TEXT-全文' } } },
+          core: { user_results: { result: { legacy: { screen_name: '__soragoto__', name: 'そら' } } } },
+        },
+      },
+    },
+  },
+})) as any
+;(async () => {
+  // 无登录态：syndication 截断文本直接返回（不抛错）
+  const p1 = await parseTwitter(SYN_URL, synHttp)
+  assert.ok(p1.desc.includes('world, heaven,'))
+  assert.ok(!p1.desc.includes('FULL-NOTE'))
+  passed++
+  console.log('  ✓ 无登录态降级为截断文本')
+  // 有登录态：note_tweet 仅 id 引用时走 GraphQL 取全文
+  const p2 = await parseTwitter(SYN_URL, synHttp, { authToken: 't', ct0: 'c' }, graphqlFull)
+  assert.equal(p2.desc, 'FULL-NOTE-TEXT-全文')
+  passed++
+  console.log('  ✓ 有登录态经 GraphQL 取回全文')
+  // GraphQL 失败（如 Cloudflare）：回退截断结果而非报错
+  const p3 = await parseTwitter(SYN_URL, synHttp, { authToken: 't', ct0: 'c' }, (async () => { throw new Error('403') }) as any)
+  assert.ok(p3.desc.includes('world, heaven,'))
+  passed++
+  console.log('  ✓ GraphQL 失败回退截断结果')
+
+  console.log(`\n全部通过：${passed} 项`)
+})().catch(e => { console.error('✗', e); process.exit(1) })

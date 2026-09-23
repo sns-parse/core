@@ -277,7 +277,8 @@ function mapGraphql(rawResult: any): ParsedData {
   const legacy = result.legacy || {}
   const user = result.core?.user_results?.result
   const ulegacy = user?.legacy || {}
-  const text = String(pick(legacy.full_text, result.note_tweet?.note_results?.note?.text, ''))
+  // 长推（note tweet）：legacy.full_text 是截断版，全文在 note_tweet.note_results.note.text
+  const text = String(pick(result.note_tweet?.note_results?.note?.text, legacy.full_text, ''))
   const p = baseParsed()
 
   const media = Array.isArray(legacy.entities?.media) ? legacy.entities.media : []
@@ -383,7 +384,18 @@ export async function parseTwitter(url: string, http: AxiosInstance, creds?: Twi
   })
   const tw = res.data
   if (tw && tw.__typename === 'Tweet' && tw.user) {
-    return mapSyndication(tw)
+    const p = mapSyndication(tw)
+    // 长推：syndication 现仅返回 note_tweet 的 id 引用（无 text），tw.text 被
+    // display_text_range 截断。有登录态时改走 GraphQL 取全文；失败回退截断结果。
+    const noteTruncated = tw.note_tweet && !tw.note_tweet.text
+    if (noteTruncated && creds && creds.authToken && creds.ct0) {
+      try {
+        return await fetchGraphqlTweet(id, creds, getGraphql || tlsGet)
+      } catch {
+        return p
+      }
+    }
+    return p
   }
 
   // 2) tombstone（需登录）：回退到鉴权 GraphQL（TLS 指纹模拟）

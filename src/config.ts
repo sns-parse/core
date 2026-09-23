@@ -25,6 +25,8 @@ export interface ConfigField {
   /** koishi 的 role：多行文本 / 密钥 */
   role?: 'textarea' | 'secret'
   hidden?: boolean
+  /** 宿主 Schema 生成时的必填标记（仅 UI 层语义） */
+  required?: boolean
   min?: number
   max?: number
   step?: number
