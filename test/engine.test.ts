@@ -11,7 +11,7 @@ import { redactConfig, createConfigEnvelope, parseConfigInput, mergeConfig, MASK
 import { shouldSkipTranslate, langName } from '../src/engine/translate'
 import { buildAuthHeaders, getPlatformConfig } from '../src/engine/platform-config'
 import { engineConfigContributions } from '../src/engine/config'
-import { parseTwitter, fetchTweetTree } from '../src/engine/twitter'
+import { parseTwitter, fetchTweetTree, assembleReplies, type TweetTree } from '../src/engine/twitter'
 import { categorizeTweetResult, parseTimeline, parseConnections } from '../src/engine/twitter-user'
 import { linkTypeParser } from '../src/utils/url'
 
@@ -389,6 +389,56 @@ const graphqlNewShape = (async () => ({
   assert.equal(conn.bottomCursor, 'C1')
   passed++
   console.log('  ✓ parseConnections：legacy/core 双结构用户条目 + 游标')
+
+  /* ---------- 会话回复树（递归） ---------- */
+  console.log('twitter 会话回复树')
+  const convResult = (id: string, replyTo?: string): any => ({
+    __typename: 'Tweet', rest_id: id,
+    legacy: { id_str: id, full_text: `conv-${id}`, lang: 'zh', ...(replyTo ? { in_reply_to_status_id_str: replyTo } : {}) },
+    core: { user_results: { result: { legacy: { name: 'n', screen_name: 's', followers_count: 1 } } } },
+  })
+  const mkNode = (raw: any): TweetTree => {
+    const cat = categorizeTweetResult(raw)
+    return { id: cat.id, tweet: { desc: `conv-${cat.id}` } as any }
+  }
+  // 会话集合：focal=5000；直接回复 5001/5002；5001 的楼中楼 5003；孤儿（父不在集合）5004；focal 自身
+  const convResults = [convResult('5000'), convResult('5001', '5000'), convResult('5002', '5000'), convResult('5003', '5001'), convResult('5004', '9999'), convResult('5000')]
+  const replies = assembleReplies('5000', convResults, 100, mkNode)
+  assert.equal(replies.length, 2, 'focal 直接回复')
+  assert.deepEqual(replies.map((r) => r.id).sort(), ['5001', '5002'])
+  assert.equal(replies.find((r) => r.id === '5001')!.replies?.[0]?.id, '5003', '楼中楼递归挂载')
+  assert.equal(replies.find((r) => r.id === '5002')!.replies?.length || 0, 0)
+  passed++
+  console.log('  ✓ assembleReplies：直接回复/楼中楼递归/孤儿跳过/focal 自身排除')
+  const capped = assembleReplies('5000', convResults, 1, mkNode)
+  assert.equal(capped.length, 1)
+  passed++
+  console.log('  ✓ assembleReplies：limit 截断')
+  // TweetDetail 全链路（mock 区分 TweetDetail 与 TweetResultByRestId）
+  const detailData = {
+    data: { threaded_conversation_with_injections_v2: { timeline: { instructions: [
+      { type: 'TimelineAddEntries', entries: [
+        { entryId: 'tweet-focal', content: { entryType: 'TimelineTimelineItem', itemContent: { tweet_results: { result: gqlResult('6000') } } } },
+        { entryId: 'conv-1', content: { entryType: 'TimelineTimelineModule', items: [
+          { itemContent: { tweet_results: { result: gqlResult('6001', { replyTo: '6000' }) } } },
+          { itemContent: { tweet_results: { result: gqlResult('6002', { replyTo: '6001' }) } } },
+        ] } },
+      ] },
+    ] } } },
+  }
+  const convGet = (async (u: string) => {
+    const du = decodeURIComponent(u)
+    if (du.includes('/TweetDetail')) return { status: 200, data: detailData }
+    const m = /"tweetId":"(\d+)"/.exec(du)
+    return { status: 200, data: { data: { tweetResult: { result: gqlResult(m?.[1] || '6000') } } } }
+  }) as any
+  const t3 = await fetchTweetTree('https://x.com/s/status/6000', { get: async () => { throw new Error('skip') } } as any, { authToken: 't', ct0: 'c' }, convGet, { withReplies: true })
+  assert.equal(t3.id, '6000')
+  assert.equal(t3.replies?.length, 1)
+  assert.equal(t3.replies![0].id, '6001')
+  assert.equal(t3.replies![0].replies?.[0]?.id, '6002', 'TweetDetail 会话递归')
+  passed++
+  console.log('  ✓ fetchTweetTree withReplies：TweetDetail 会话装配递归')
 
   console.log(`\n全部通过：${passed} 项`)
 })().catch(e => { console.error('✗', e); process.exit(1) })

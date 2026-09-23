@@ -43,6 +43,170 @@ export interface TwitterCreds {
   ct0: string
 }
 
+/* ===================== X GraphQL 公共件（用户维度查询与树共用） ===================== */
+
+export interface TwitterQueryIds {
+  UserByScreenName?: string
+  UserTweets?: string
+  UserTweetsAndReplies?: string
+  Likes?: string
+  Followers?: string
+  Following?: string
+  TweetDetail?: string
+}
+
+/** 默认 queryId 清单（随 x.com web 版本漂移；调用方可整体覆盖） */
+export const DEFAULT_QUERY_IDS: Required<TwitterQueryIds> = {
+  UserByScreenName: 'sLVLhk0bGj3MVFEKTdax1w',
+  UserTweets: 'HuTx74BxAnezK1gWvYY7zg',
+  UserTweetsAndReplies: 'RIWc55YCNyUJ-U3HHGYkdg',
+  Likes: 'nXEl0lfN_XSznVMlprThgQ',
+  Followers: 'pd8Tt1qUz1YWrICegqZ8cw',
+  Following: 'wjvx62Hye2dGVvnvVco0xA',
+  TweetDetail: 'zXaXQgfyR4GxE21uwYQSyA',
+}
+
+/** 时间线类查询的特性集（UserTweets/Likes/Followers/TweetDetail 共用） */
+export const TIMELINE_FEATURES: Record<string, boolean> = {
+  blue_business_profile_image_shape_enabled: true,
+  creator_subscriptions_tweet_preview_api_enabled: true,
+  freedom_of_speech_not_reach_fetch_enabled: true,
+  graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
+  graphql_timeline_v2_bookmark_timeline: true,
+  hidden_profile_likes_enabled: true,
+  highlights_tweets_tab_ui_enabled: true,
+  interactive_text_enabled: true,
+  longform_notetweets_consumption_enabled: true,
+  longform_notetweets_inline_media_enabled: true,
+  longform_notetweets_rich_text_read_enabled: true,
+  longform_notetweets_richtext_consumption_enabled: true,
+  profile_foundations_tweet_stats_enabled: true,
+  profile_foundations_tweet_stats_tweet_frequency: true,
+  responsive_web_birdwatch_note_limit_enabled: true,
+  responsive_web_edit_tweet_api_enabled: true,
+  responsive_web_enhance_cards_enabled: false,
+  responsive_web_graphql_exclude_directive_enabled: true,
+  responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+  responsive_web_graphql_timeline_navigation_enabled: true,
+  responsive_web_media_download_video_enabled: false,
+  responsive_web_text_conversations_enabled: false,
+  responsive_web_twitter_article_data_v2_enabled: true,
+  responsive_web_twitter_article_tweet_consumption_enabled: false,
+  responsive_web_twitter_blue_verified_badge_is_enabled: true,
+  rweb_lists_timeline_redesign_enabled: true,
+  spaces_2022_h2_clipping: true,
+  spaces_2022_h2_spaces_communities: true,
+  standardized_nudges_misinfo: true,
+  subscriptions_verification_info_verified_since_enabled: true,
+  tweet_awards_web_tipping_enabled: false,
+  tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+  tweetypie_unmention_optimization_enabled: true,
+  verified_phone_label_enabled: false,
+  vibe_api_enabled: true,
+  view_counts_everywhere_api_enabled: true,
+}
+
+/** 鉴权 GraphQL 通用请求（headers/cookie 与 TweetResultByRestId 同源） */
+export async function twitterGraphql(
+  opName: string,
+  queryId: string,
+  variables: Record<string, any>,
+  creds: TwitterCreds,
+  get: GraphqlGetter,
+  features: Record<string, boolean> = TIMELINE_FEATURES,
+): Promise<any> {
+  const url = `https://x.com/i/api/graphql/${queryId}/${opName}` +
+    `?variables=${encodeURIComponent(JSON.stringify(variables))}&features=${encodeURIComponent(JSON.stringify(features))}`
+  let res
+  try {
+    res = await get(url, {
+      headers: {
+        authorization: `Bearer ${WEB_BEARER}`,
+        'x-csrf-token': creds.ct0,
+        'x-twitter-auth-type': 'OAuth2Session',
+        'x-twitter-active-user': 'yes',
+        'x-twitter-client-language': 'en',
+      },
+      cookies: { auth_token: creds.authToken, ct0: creds.ct0 },
+      timeout: 30000,
+    })
+  } catch (e: any) {
+    throw new Error(`X GraphQL 请求失败：${e?.message || e}`)
+  }
+  if (res.status === 403 || res.status === 429) {
+    throw new Error(
+      `X GraphQL 被 Cloudflare 拦截 (HTTP ${res.status})：TLS 指纹校验未通过。` +
+      `请确认已安装可选依赖 @char46/tlsget-rs（npm i @char46/tlsget-rs），它提供浏览器级 TLS 指纹。`
+    )
+  }
+  if (res.status !== 200) {
+    throw new Error(`X GraphQL ${opName} 返回 HTTP ${res.status}：${typeof res.data === 'string' ? res.data.slice(0, 120) : JSON.stringify(res.data || {}).slice(0, 120)}`)
+  }
+  return res.data
+}
+
+/** 纯函数：把单条 tweet result 归类（含转推解包） */
+export function categorizeTweetResult(result: any): {
+  inner: any
+  isRetweet: boolean
+  isReply: boolean
+  hasVideo: boolean
+  hasImage: boolean
+  isText: boolean
+  id: string
+  replyToId?: string
+} {
+  const raw = unwrapTweetResult(result)
+  const rtInner = raw?.legacy?.retweeted_status_result?.result
+  const inner = rtInner ? unwrapTweetResult(rtInner) : raw
+  const legacy = inner?.legacy || {}
+  const media: any[] = Array.isArray(legacy.extended_entities?.media) ? legacy.extended_entities.media : []
+  const hasImage = media.some((m: any) => m?.type === 'photo')
+  const hasVideo = media.some((m: any) => m?.type === 'video' || m?.type === 'animated_gif')
+  const isRetweet = !!rtInner
+  const replyToId = typeof legacy.in_reply_to_status_id_str === 'string' ? legacy.in_reply_to_status_id_str : undefined
+  const isReply = !!replyToId
+  const isText = !hasImage && !hasVideo && !isRetweet
+  return {
+    inner,
+    isRetweet,
+    isReply,
+    hasVideo,
+    hasImage,
+    isText,
+    id: String(inner?.rest_id ?? legacy.id_str ?? ''),
+    replyToId,
+  }
+}
+
+/** 纯函数：从 timeline instructions 抽取推文结果与底部游标（Item/Module 均收） */
+export function walkTimelineResults(instructions: any[]): { results: any[]; bottomCursor?: string } {
+  const results: any[] = []
+  let bottomCursor: string | undefined
+  for (const ins of instructions || []) {
+    const entries: any[] = ins?.entries || ins?.entry ? [].concat(ins.entry, ins.entries).filter(Boolean) : []
+    for (const entry of entries) {
+      const content = entry?.content
+      if (!content) continue
+      if (content.entryType === 'TimelineTimelineCursor' && content.contentType === 'Bottom') {
+        bottomCursor = String(content.value || bottomCursor || '')
+        continue
+      }
+      if (content.entryType === 'TimelineTimelineItem' && content.itemContent?.tweet_results?.result) {
+        results.push(content.itemContent.tweet_results.result)
+        continue
+      }
+      if (content.entryType === 'TimelineTimelineModule') {
+        for (const item of content.items || []) {
+          const r = item?.itemContent?.tweet_results?.result
+          if (r) results.push(r)
+        }
+      }
+    }
+  }
+  return { results, bottomCursor }
+}
+
 /** Grok 翻译特性集（与网页端抓包一致；关键是 grok_show_grok_translated_post 开关） */
 const GROK_FEATURES: Record<string, boolean> = {
   creator_subscriptions_tweet_preview_api_enabled: true,
@@ -444,18 +608,25 @@ export async function parseTwitter(url: string, http: AxiosInstance, creds?: Twi
   throw new Error(`推文不可访问（可能需要登录、已被删除或为非公开内容）${reasonRaw ? '：' + reasonRaw : ''}`)
 }
 
-/* ===================== 推文树：引用链 + 回复链 ===================== */
+/* ===================== 推文树：引用链 + 回复链 + 会话回复树 ===================== */
 
-/** 推文树节点：quoted = 本推引用的推文（递归）；replyTo = 本推回复的目标（向根方向递归） */
+/**
+ * 推文树节点：
+ * - quoted = 本推引用的推文（递归）
+ * - replyTo = 本推回复的目标（向根方向递归）
+ * - replies = 本推收到的回复（评论，向下递归；withReplies 时填充）
+ */
 export interface TweetTree {
   id: string
   tweet: ParsedData
   quoted?: TweetTree
   replyTo?: TweetTree
+  replies?: TweetTree[]
 }
 
 const TREE_QUOTE_DEPTH = 6
 const TREE_REPLY_DEPTH = 12
+const TREE_REPLIES_LIMIT = 100
 
 /** 游客态（syndication）取被引用推文 ID：显式字段优先；否则启发式——引用链的
  *  t.co 短链由 X 追加在正文末尾，expanded_url 为推文永久链。 */
@@ -494,8 +665,58 @@ async function fetchSyndicationRaw(tweetId: string, http: AxiosInstance): Promis
   return tw && tw.__typename === 'Tweet' && tw.user ? tw : null
 }
 
+export interface FetchTweetTreeOptions {
+  /** 拉取会话回复树（TweetDetail；需登录态） */
+  withReplies?: boolean
+  /** 回复条数上限（默认 100） */
+  repliesLimit?: number
+  /** queryId 覆盖 */
+  queryIds?: TwitterQueryIds
+}
+
 /**
- * 拉取推文树：引用链（quoted，向下递归）+ 回复链（replyTo，向根递归）。
+ * 纯函数：由会话内的全部 tweet result 装配回复树（挂在 focal 节点下）。
+ * 依据 in_reply_to_status_id_str 建父子边；父不在集合内的孤儿回复跳过。
+ */
+export function assembleReplies(
+  focalId: string,
+  results: any[],
+  limit: number,
+  makeNode: (raw: any) => TweetTree,
+): TweetTree[] {
+  const byId = new Map<string, { node: TweetTree; replyToId?: string }>()
+  for (const r of results) {
+    const cat = categorizeTweetResult(r)
+    if (!cat.id || byId.has(cat.id) || cat.id === focalId) continue
+    byId.set(cat.id, { node: makeNode(cat.inner), replyToId: cat.replyToId })
+  }
+  const childrenOf = new Map<string, TweetTree[]>()
+  const roots: TweetTree[] = []
+  for (const { node, replyToId } of byId.values()) {
+    if (replyToId && byId.has(replyToId)) {
+      ;(childrenOf.get(replyToId) || childrenOf.set(replyToId, []).get(replyToId)!).push(node)
+    } else if (replyToId === focalId) {
+      roots.push(node)
+    }
+    /* 父不在集合内（祖先线程外）→ 跳过 */
+  }
+  let budget = limit
+  const attach = (nodes: TweetTree[]): TweetTree[] => {
+    const out: TweetTree[] = []
+    for (const n of nodes) {
+      if (budget <= 0) break
+      budget--
+      n.replies = attach(childrenOf.get(n.id) || [])
+      out.push(n)
+    }
+    return out
+  }
+  return attach(roots)
+}
+
+/**
+ * 拉取推文树：引用链（quoted，向下递归）+ 回复链（replyTo，向根递归）
+ * + 可选会话回复树（replies，向下递归，TweetDetail 装配）。
  * - 有登录态：GraphQL 单次响应自带嵌套 quoted_status_result；父级逐次拉取
  * - 无登录态：syndication 逐节点拉取（引用 ID 走启发式）；不可达分支静默截断
  */
@@ -504,6 +725,7 @@ export async function fetchTweetTree(
   http: AxiosInstance,
   creds?: TwitterCreds,
   getGraphql?: GraphqlGetter,
+  opts: FetchTweetTreeOptions = {},
 ): Promise<TweetTree> {
   const id = extractTweetId(url)
   if (!id) throw new Error('无法从 X 链接提取推文 ID')
@@ -548,12 +770,55 @@ export async function fetchTweetTree(
     return buildFromGraphqlResult(raw, depth)
   }
 
-  if (creds && creds.authToken && creds.ct0) {
+  /** 同步构建会话回复节点：嵌套引用链照常递归（无需网络），父链不拉（由会话集合装配） */
+  function nodeFromResultSync(raw: any): TweetTree {
+    raw = unwrapTweetResult(raw)
+    const rid0 = String(pick(raw?.rest_id, raw?.legacy?.id_str, ''))
+    if (rid0) visited.add(rid0)
+    const node: TweetTree = { id: rid0, tweet: mapGraphql(raw) }
+    const q = unwrapTweetResult(raw?.quoted_status_result?.result)
+    if (q && q.legacy && q.__typename !== 'TweetTombstone') {
+      const qid = String(pick(q.rest_id, q.legacy?.id_str, ''))
+      if (!qid || !visited.has(qid)) node.quoted = nodeFromResultSync(q)
+    }
+    return node
+  }
+
+  async function attachConversation(node: TweetTree): Promise<void> {
+    if (!node) return
+    const qids = { ...DEFAULT_QUERY_IDS, ...opts.queryIds }
+    const variables = {
+      focalTweetId: node.id,
+      with_rux_injections: false,
+      rankingMode: 'Relevance',
+      includePromotedContent: true,
+      withCommunity: true,
+      withQuickPromoteEligibilityTweetQuery: false,
+      withBirdwatchNotes: true,
+      withVoice: true,
+    }
+    const data = await twitterGraphql('TweetDetail', qids.TweetDetail, variables, creds!, getGraphql || tlsGet)
+    const instructions = data?.data?.threaded_conversation_with_injections_v2?.timeline?.instructions
+    const { results } = walkTimelineResults(instructions || [])
+    node.replies = assembleReplies(node.id, results, opts.repliesLimit ?? TREE_REPLIES_LIMIT, nodeFromResultSync)
+  }
+
+  const usedGraphql = !!(creds && creds.authToken && creds.ct0)
+  let tree: TweetTree
+  if (usedGraphql) {
     try {
-      return await buildGraphqlById(id, 0)
+      tree = await buildGraphqlById(id, 0)
     } catch {
       /* 登录态失败（如 Cloudflare）回退游客路径 */
+      tree = await buildGuest(id, 0)
     }
+  } else {
+    tree = await buildGuest(id, 0)
   }
-  return buildGuest(id, 0)
+  if (opts.withReplies && usedGraphql && tree) {
+    try {
+      await attachConversation(tree)
+    } catch { /* 会话不可达则保留无回复树 */ }
+  }
+  return tree
 }
