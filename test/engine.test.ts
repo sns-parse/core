@@ -11,7 +11,8 @@ import { redactConfig, createConfigEnvelope, parseConfigInput, mergeConfig, MASK
 import { shouldSkipTranslate, langName } from '../src/engine/translate'
 import { buildAuthHeaders, getPlatformConfig } from '../src/engine/platform-config'
 import { engineConfigContributions } from '../src/engine/config'
-import { parseTwitter } from '../src/engine/twitter'
+import { parseTwitter, fetchTweetTree } from '../src/engine/twitter'
+import { categorizeTweetResult, parseTimeline, parseConnections } from '../src/engine/twitter-user'
 import { linkTypeParser } from '../src/utils/url'
 
 let passed = 0
@@ -294,6 +295,100 @@ const graphqlNewShape = (async () => ({
   assert.equal(p5.desc, '第一段\n\n第二段\n\n第三段')
   passed++
   console.log('  ✓ 段落换行保留 + t.co 短链剥离')
+
+  /* ---------- 推文树（引用链 + 回复链） ---------- */
+  console.log('twitter 推文树')
+  // 游客态：引用启发式（文末 t.co → expanded 推文永久链）+ 回复上溯
+  const synTweets: Record<string, any> = {
+    '1001': { __typename: 'Tweet', user: { screen_name: 'alice' }, text: '回复了楼上 https://t.co/Q1', lang: 'zh', in_reply_to_status_id_str: '1000', entities: { urls: [{ url: 'https://t.co/Q1', expanded_url: 'https://x.com/bob/status/900?type=link' }] } },
+    '1000': { __typename: 'Tweet', user: { screen_name: 'bob' }, text: '根推，引用了别人的话 https://t.co/Q2', lang: 'zh', entities: { urls: [{ url: 'https://t.co/Q2', expanded_url: 'https://x.com/carol/status/999' }] } },
+    '999': { __typename: 'Tweet', user: { screen_name: 'carol' }, text: '被引用的老推', lang: 'zh' },
+  }
+  const treeHttp = { get: async (_u: string, cfg: any) => ({ data: synTweets[cfg.params.id] }) } as any
+  const t1 = await fetchTweetTree('https://x.com/alice/status/1001', treeHttp)
+  assert.equal(t1.id, '1001')
+  assert.ok(t1.replyTo && t1.replyTo.id === '1000', '回复链上溯')
+  assert.ok(t1.replyTo!.quoted && t1.replyTo!.quoted!.id === '999', '引用链启发式（文末 t.co + expanded 永久链）')
+  assert.equal(t1.replyTo!.quoted!.replyTo, undefined)
+  passed++
+  console.log('  ✓ 游客态：引用启发式 + 回复上溯')
+
+  // GraphQL：嵌套 quoted_status_result 一次响应全展开
+  const gqlResult = (id: string, opts: { replyTo?: string; quote?: any } = {}): any => ({
+    __typename: 'Tweet',
+    rest_id: id,
+    legacy: {
+      id_str: id, full_text: `tweet-${id}`, lang: 'zh', favorite_count: 1,
+      ...(opts.replyTo ? { in_reply_to_status_id_str: opts.replyTo } : {}),
+    },
+    core: { user_results: { result: { legacy: { name: 'n', screen_name: 's', followers_count: 1 } } } },
+    ...(opts.quote ? { quoted_status_result: { result: opts.quote } } : {}),
+  })
+  const nested = gqlResult('2002', {
+    replyTo: '2001',
+    quote: gqlResult('2999', { quote: gqlResult('2998') }),
+  })
+  const parent = gqlResult('2001', { quote: gqlResult('2998') })
+  const gqlGet = (async (u: string) => {
+    const m = /"tweetId":"(\d+)"/.exec(decodeURIComponent(u))
+    const result = m && m[1] === '2002' ? nested : parent
+    return { status: 200, data: { data: { tweetResult: { result } } } }
+  }) as any
+  const t2 = await fetchTweetTree('https://x.com/s/status/2002', { get: async () => { throw new Error('skip') } } as any, { authToken: 't', ct0: 'c' }, gqlGet)
+  assert.equal(t2.id, '2002')
+  assert.equal(t2.quoted!.id, '2999')
+  assert.equal(t2.quoted!.quoted!.id, '2998')
+  assert.equal(t2.replyTo!.id, '2001')
+  assert.equal(t2.replyTo!.quoted, undefined, '同一引用（2998）已在子孙链出现，visited 去重省略')
+  passed++
+  console.log('  ✓ GraphQL：嵌套引用链一次展开 + 父链拉取（visited 防环）')
+
+  /* ---------- 用户时间线 / 关注列表（纯函数） ---------- */
+  console.log('twitter 用户时间线（纯函数）')
+  const rt1 = {
+    __typename: 'Tweet', rest_id: '3001',
+    legacy: { id_str: '3001', full_text: 'RT @x: 转发内容', lang: 'zh', retweeted_status_result: { result: { __typename: 'Tweet', rest_id: '3000', legacy: { id_str: '3000', full_text: '原始内容', lang: 'zh', extended_entities: { media: [{ type: 'photo' }] } } } } },
+  }
+  const c1 = categorizeTweetResult(rt1)
+  assert.equal(c1.isRetweet, true); assert.equal(c1.id, '3000'); assert.equal(c1.hasImage, true)
+  const c2 = categorizeTweetResult({ __typename: 'Tweet', rest_id: '3002', legacy: { id_str: '3002', full_text: '回复', in_reply_to_status_id_str: '3001', lang: 'zh' } })
+  assert.equal(c2.isReply, true); assert.equal(c2.isText, true); assert.equal(c2.replyToId, '3001')
+  const c3 = categorizeTweetResult({ __typename: 'Tweet', rest_id: '3003', legacy: { id_str: '3003', full_text: '视频', lang: 'zh', extended_entities: { media: [{ type: 'video' }] } } })
+  assert.equal(c3.hasVideo, true); assert.equal(c3.isText, false)
+  passed++
+  console.log('  ✓ categorizeTweetResult：转推解包/回复/媒体/文字')
+  const instructions = [
+    { type: 'TimelineAddEntries', entries: [
+      { entryId: 'tweet-1', content: { entryType: 'TimelineTimelineItem', itemContent: { tweet_results: { result: rt1 } } } },
+      { entryId: 'cursor-bottom-1', content: { entryType: 'TimelineTimelineCursor', contentType: 'Bottom', value: 'CUR1' } },
+    ] },
+    { type: 'TimelineAddEntries', entries: [
+      { entryId: 'tweet-2', content: { entryType: 'TimelineTimelineModule', items: [
+        { itemContent: { tweet_results: { result: { __typename: 'Tweet', rest_id: '3004', legacy: { id_str: '3004', full_text: '线程内', lang: 'zh' } } } } },
+      ] } },
+      { entryId: 'cursor-bottom-2', content: { entryType: 'TimelineTimelineCursor', contentType: 'Bottom', value: 'CUR2' } },
+    ] },
+  ]
+  const tl = parseTimeline(instructions)
+  assert.equal(tl.results.length, 2)
+  assert.equal(tl.bottomCursor, 'CUR2')
+  passed++
+  console.log('  ✓ parseTimeline：Item/Module 条目 + Bottom 游标')
+  const connInstructions = [
+    { type: 'TimelineAddEntries', entries: [
+      { entryId: 'user-1', content: { entryType: 'TimelineTimelineItem', itemContent: { user_results: { result: { __typename: 'User', legacy: { name: '张三', screen_name: 'zhang', followers_count: 10, followed_by: true }, profile_bio: { description: '简介' } } } } } },
+      { entryId: 'user-2', content: { entryType: 'TimelineTimelineItem', itemContent: { user_results: { result: { __typename: 'User', is_blue_verified: true, core: { name: '李四', screen_name: 'li' } } } } } },
+      { entryId: 'cursor-bottom', content: { entryType: 'TimelineTimelineCursor', contentType: 'Bottom', value: 'C1' } },
+    ] },
+  ]
+  const conn = parseConnections(connInstructions)
+  assert.equal(conn.users.length, 2)
+  assert.equal(conn.users[0].screenName, 'zhang')
+  assert.equal(conn.users[0].followedBy, true)
+  assert.equal(conn.users[1].verified, true)
+  assert.equal(conn.bottomCursor, 'C1')
+  passed++
+  console.log('  ✓ parseConnections：legacy/core 双结构用户条目 + 游标')
 
   console.log(`\n全部通过：${passed} 项`)
 })().catch(e => { console.error('✗', e); process.exit(1) })

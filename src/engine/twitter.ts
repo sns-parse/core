@@ -140,7 +140,7 @@ export async function fetchGrokTranslation(url: string, targetLang: string, cred
   return { text: text.trim(), sourceLang: node.data?.source_language ? String(node.data.source_language) : undefined }
 }
 
-function extractTweetId(url: string): string | null {
+export function extractTweetId(url: string): string | null {
   const m = /\/status(?:es)?\/(\d+)/.exec(url)
   return m ? m[1] : null
 }
@@ -295,7 +295,7 @@ function mapSyndication(tw: any): ParsedData {
 }
 
 /** 把 GraphQL TweetResultByRestId 响应映射为 ParsedData */
-function mapGraphql(rawResult: any): ParsedData {
+export function mapGraphql(rawResult: any): ParsedData {
   // NSFW/受限推文会被 TweetWithVisibilityResults 包裹，真实推文在其 .tweet 下
   let result = rawResult
   if (result && result.__typename === 'TweetWithVisibilityResults' && result.tweet) {
@@ -359,8 +359,13 @@ function mapGraphql(rawResult: any): ParsedData {
   return p
 }
 
-/** 鉴权 GraphQL：仅用 auth_token + ct0，回退取登录受限推文 */
-async function fetchGraphqlTweet(id: string, creds: TwitterCreds, get: GraphqlGetter): Promise<ParsedData> {
+/** 解除 TweetWithVisibilityResults 包裹（NSFW/受限推文） */
+export function unwrapTweetResult(result: any): any {
+  return result && result.__typename === 'TweetWithVisibilityResults' && result.tweet ? result.tweet : result
+}
+
+/** 鉴权 GraphQL 原始获取：返回未映射的 tweet result 节点（树构建复用） */
+export async function fetchGraphqlRaw(id: string, creds: TwitterCreds, get: GraphqlGetter): Promise<any> {
   const variables = { tweetId: id, includePromotedContent: true, withBirdwatchNotes: true, withVoice: true, withCommunity: true }
   const url = `https://x.com/i/api/graphql/${TWEET_RESULT_QUERY_ID}/TweetResultByRestId` +
     `?variables=${encodeURIComponent(JSON.stringify(variables))}&features=${encodeURIComponent(JSON.stringify(GRAPHQL_FEATURES))}`
@@ -397,7 +402,12 @@ async function fetchGraphqlTweet(id: string, creds: TwitterCreds, get: GraphqlGe
     const tb = result?.tombstone?.text?.text || result?.tombstone?.text
     throw new Error(`推文不可访问（可能需要登录、已被删除或为非公开内容）${tb ? '：' + tb : ''}`)
   }
-  return mapGraphql(result)
+  return unwrapTweetResult(result)
+}
+
+/** 鉴权 GraphQL：仅用 auth_token + ct0，回退取登录受限推文 */
+async function fetchGraphqlTweet(id: string, creds: TwitterCreds, get: GraphqlGetter): Promise<ParsedData> {
+  return mapGraphql(await fetchGraphqlRaw(id, creds, get))
 }
 
 export async function parseTwitter(url: string, http: AxiosInstance, creds?: TwitterCreds, getGraphql?: GraphqlGetter): Promise<ParsedData> {
@@ -432,4 +442,118 @@ export async function parseTwitter(url: string, http: AxiosInstance, creds?: Twi
   }
   const reasonRaw = pick(tw?.tombstone?.text, tw?.tombstone?.name)
   throw new Error(`推文不可访问（可能需要登录、已被删除或为非公开内容）${reasonRaw ? '：' + reasonRaw : ''}`)
+}
+
+/* ===================== 推文树：引用链 + 回复链 ===================== */
+
+/** 推文树节点：quoted = 本推引用的推文（递归）；replyTo = 本推回复的目标（向根方向递归） */
+export interface TweetTree {
+  id: string
+  tweet: ParsedData
+  quoted?: TweetTree
+  replyTo?: TweetTree
+}
+
+const TREE_QUOTE_DEPTH = 6
+const TREE_REPLY_DEPTH = 12
+
+/** 游客态（syndication）取被引用推文 ID：显式字段优先；否则启发式——引用链的
+ *  t.co 短链由 X 追加在正文末尾，expanded_url 为推文永久链。 */
+export function guestQuoteId(tw: any): string | undefined {
+  const q = tw?.quoted_tweet || tw?.quoted_status_result
+  if (q) {
+    const id = String(pick(q.id_str, q.rest_id, ''))
+    if (/^\d+$/.test(id)) return id
+  }
+  const urls: any[] = Array.isArray(tw?.entities?.urls) ? tw.entities.urls : []
+  const rawText: string = String(tw?.text || '')
+  const textEnd = rawText.trimEnd()
+  for (const u of urls) {
+    if (!u?.url || !textEnd.endsWith(u.url)) continue
+    const m = /(?:x|twitter)\.com\/[^/]+\/status(?:es)?\/(\d+)/.exec(String(u.expanded_url || ''))
+    if (m) return m[1]
+  }
+  return undefined
+}
+
+/** 游客态（syndication）取回复目标推文 ID */
+export function guestReplyToId(tw: any): string | undefined {
+  const id = pick(tw?.in_reply_to_status_id_str, tw?.in_reply_to_status_id)
+  if (typeof id === 'string' && /^\d+$/.test(id)) return id
+  if (typeof id === 'number') return String(id)
+  return undefined
+}
+
+async function fetchSyndicationRaw(tweetId: string, http: AxiosInstance): Promise<any> {
+  const res = await http.get(SYNDICATION_URL, {
+    params: { id: tweetId, token: 'a' },
+    timeout: 30000,
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+  })
+  const tw = res.data
+  return tw && tw.__typename === 'Tweet' && tw.user ? tw : null
+}
+
+/**
+ * 拉取推文树：引用链（quoted，向下递归）+ 回复链（replyTo，向根递归）。
+ * - 有登录态：GraphQL 单次响应自带嵌套 quoted_status_result；父级逐次拉取
+ * - 无登录态：syndication 逐节点拉取（引用 ID 走启发式）；不可达分支静默截断
+ */
+export async function fetchTweetTree(
+  url: string,
+  http: AxiosInstance,
+  creds?: TwitterCreds,
+  getGraphql?: GraphqlGetter,
+): Promise<TweetTree> {
+  const id = extractTweetId(url)
+  if (!id) throw new Error('无法从 X 链接提取推文 ID')
+  const visited = new Set<string>()
+
+  async function buildGuest(tweetId: string, depth: number): Promise<TweetTree> {
+    visited.add(tweetId)
+    const tw = await fetchSyndicationRaw(tweetId, http)
+    if (!tw) throw new Error(`推文 ${tweetId} 不可访问（可能需要登录或已删除）`)
+    const node: TweetTree = { id: tweetId, tweet: mapSyndication(tw) }
+    const qid = guestQuoteId(tw)
+    if (qid && !visited.has(qid) && depth < TREE_QUOTE_DEPTH) {
+      try { node.quoted = await buildGuest(qid, depth + 1) } catch { /* 引用不可达则截断 */ }
+    }
+    const rid = guestReplyToId(tw)
+    if (rid && !visited.has(rid) && depth < TREE_REPLY_DEPTH) {
+      try { node.replyTo = await buildGuest(rid, depth + 1) } catch { /* 父推不可达则截断 */ }
+    }
+    return node
+  }
+
+  async function buildFromGraphqlResult(raw: any, depth: number): Promise<TweetTree> {
+    raw = unwrapTweetResult(raw)
+    const rid0 = String(pick(raw?.rest_id, raw?.legacy?.id_str, ''))
+    if (rid0) visited.add(rid0)
+    const node: TweetTree = { id: rid0, tweet: mapGraphql(raw) }
+    const q = unwrapTweetResult(raw?.quoted_status_result?.result)
+    if (q && q.legacy && q.__typename !== 'TweetTombstone' && depth < TREE_QUOTE_DEPTH) {
+      const qid = String(pick(q.rest_id, q.legacy?.id_str, ''))
+      if (!qid || !visited.has(qid)) node.quoted = await buildFromGraphqlResult(q, depth + 1)
+    }
+    const rid = raw?.legacy?.in_reply_to_status_id_str
+    if (typeof rid === 'string' && /^\d+$/.test(rid) && !visited.has(rid) && depth < TREE_REPLY_DEPTH) {
+      try { node.replyTo = await buildGraphqlById(rid, depth + 1) } catch { /* 父推不可达则截断 */ }
+    }
+    return node
+  }
+
+  async function buildGraphqlById(tweetId: string, depth: number): Promise<TweetTree> {
+    if (visited.has(tweetId)) throw new Error('引用环')
+    const raw = await fetchGraphqlRaw(tweetId, creds!, getGraphql || tlsGet)
+    return buildFromGraphqlResult(raw, depth)
+  }
+
+  if (creds && creds.authToken && creds.ct0) {
+    try {
+      return await buildGraphqlById(id, 0)
+    } catch {
+      /* 登录态失败（如 Cloudflare）回退游客路径 */
+    }
+  }
+  return buildGuest(id, 0)
 }

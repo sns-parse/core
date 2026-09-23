@@ -1,6 +1,6 @@
 {
   "name": "@sns-parse/core",
-  "version": "0.4.0-alpha.6+upstream.1.6.7",
+  "version": "0.4.0-alpha.7+upstream.1.6.7",
   "description": "sns-parse 核心：契约、宿主抽象、配置 DSL 与解析引擎（fetcher/parser/翻译/X 原生解析/合并/GIF/TLS 指纹客户端）",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
