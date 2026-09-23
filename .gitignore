@@ -1,3 +1,6 @@
 node_modules/
 lib/
 *.log
+
+vt.out
+vt.err
