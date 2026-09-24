@@ -1,28 +1,30 @@
 /**
- * 运行时构建（自宿主 runtime 下沉，平台无关）。
+ * 运行时装配（本文件在 core 内，平台无关）。
  *
- * 平台定义列表（defs）由调用方传入：
- * - koishi 兼容层传内置 BUILTIN_PLATFORMS（本地 definitions）
- * - CLI 传 collectPlatformDefinitions()（已安装的 @sns-parse/platform-*）
- * 默认扩展实现同样由宿主注入（loadExtensionImplementations() 发现已安装 ext-*）；
- * core 只负责调度，不持有任何功能实现。
+ * 平台定义列表（defs）由宿主按已加载平台插件声明注入：
+ * - koishi 兼容层：collectPlatformDefinitions(anchor)（聚合包 + 粒度包并集）
+ * - CLI：collectPlatformDefinitions()
+ * 工作流阶段基线在 createDefaultPipeline()，扩展经 WorkflowExtension.setup(hooks) 注入/替换。
+ * core 不依赖任何扩展包、不含扩展实现。
  */
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import type { ParsedData, CustomPlatformConfig } from '../types'
 import type { VideoParserHost } from '../host'
 import { createHost } from '../host'
-import type { VideoParserExtensions } from '../extensions'
+import type { WorkflowExtension } from '../extensions'
 import type { PlatformDefinition } from '../platform'
 import { SimpleLRUCache } from '../utils/cache'
 import { parseFieldMapping } from '../utils/field-mapping'
 import { buildCustomLinkRules } from './platform-config'
 import { dedicatedApisFrom, type DedicatedApiMaps } from './gateway'
+import { createDefaultPipeline } from '../workflow/default'
+import type { Pipeline } from '../workflow/hooks'
 
 export interface ParserRuntime {
-  /** 宿主抽象（core 统一入口） */
+  /** 宿主适配（core 统一入口） */
   host: VideoParserHost
-  /** 过渡期兼容字段：底层上下文（等同于 host.context） */
+  /** 仅在特化字段：底层运行模块（等同于 host.context） */
   ctx: any
   config: any
   http: AxiosInstance
@@ -33,25 +35,27 @@ export interface ParserRuntime {
   contentDedupCache: SimpleLRUCache<number>
   customPlatforms: CustomPlatformConfig[]
   allRules: { pattern: RegExp; type: string }[]
-  /** 平台定义列表（原生解析/翻译钩子由 fetcher 查找使用） */
+  /** 平台定义列表（原生解析/原生翻译 fetcher 阶段使用） */
   defs: PlatformDefinition[]
-  /** 平台专属端点映射（由 defs 计算；getPlatformConfig 使用） */
+  /** 平台专属 API 映射（由 defs 推导；getPlatformConfig 使用） */
   dedicatedApis: DedicatedApiMaps
-  /** 扩展能力（默认实现 + 宿主覆盖） */
-  extensions: VideoParserExtensions
+  /** 已加载扩展片段（能力位/配置贡献查询用；实现经管道注入） */
+  extensions: WorkflowExtension[]
+  /** 工作流阶段管道（基线 + 扩展注入） */
+  pipeline: Pipeline
 }
 
 export interface CreateRuntimeOptions {
-  /** 平台定义列表（内置或已安装包收集）；缺省为空（仅自定义平台规则可用） */
+  /** 平台定义列表（按用户已加载插件声明；缺省为空，只认自定义平台配置） */
   defs?: PlatformDefinition[]
-  /** 默认扩展实现（koishi 层含 NSFW；CLI 可用 createCoreExtensions） */
-  defaultExtensions?: VideoParserExtensions
+  /** 扩展片段（setup 钩子注入；后注册者胜） */
+  extensions?: WorkflowExtension[]
 }
 
 export function createRuntime(source: any, config: any, opts: CreateRuntimeOptions = {}): ParserRuntime {
   const host = createHost(source)
   const ctx = host.context
-  const extensions: VideoParserExtensions = { ...(opts.defaultExtensions || {}), ...(host.extensions || {}) }
+  const extensions: WorkflowExtension[] = [...(opts.extensions || []), ...((host.extensions as WorkflowExtension[]) || [])]
   const dedupCache = new SimpleLRUCache<number>(1000, config.deduplicationInterval * 1000)
   const cacheTTL = (config.cacheTTL || 600) * 1000
   const urlCacheLocal = new SimpleLRUCache<{ data: ParsedData; expire: number }>(500, cacheTTL)
@@ -93,7 +97,12 @@ export function createRuntime(source: any, config: any, opts: CreateRuntimeOptio
   }
   const http: AxiosInstance = axios.create(axiosConfig)
 
-  return {
+  const pipeline = createDefaultPipeline(null)
+  for (const ext of extensions) {
+    if (ext && typeof ext.setup === 'function') ext.setup(pipeline)
+  }
+
+  const runtime: ParserRuntime = {
     host,
     ctx,
     config,
@@ -108,5 +117,8 @@ export function createRuntime(source: any, config: any, opts: CreateRuntimeOptio
     defs,
     dedicatedApis,
     extensions,
+    pipeline,
   }
+  pipeline.rt = runtime
+  return runtime
 }

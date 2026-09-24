@@ -10,6 +10,7 @@ import { getPlatformConfig, buildAuthHeaders } from './platform-config'
 import { shouldSkipTranslate } from './translate'
 import { tlsGet } from '../utils/tls-client'
 import { NEW_GATEWAY_PRIMARY, LEGACY_GATEWAY_PRIMARY, LEGACY_GATEWAY_BACKUP } from './gateway'
+import { runStage } from '../workflow/hooks'
 
 export async function fetchApi(rt: ParserRuntime, url: string, type: string, fieldMapping?: Record<string, string>, platformConf?: any): Promise<ParsedData> {
   const { config, http, urlCacheLocal, proxyConfig, cacheTTL } = rt
@@ -49,7 +50,7 @@ export async function fetchApi(rt: ParserRuntime, url: string, type: string, fie
           if (!parsed.lang && nativeTr.sourceLang) parsed.lang = nativeTr.sourceLang
         }
         if (!translated) {
-          const generic = await rt.extensions.translate?.(rt, parsed.desc, target, parsed.lang)
+          const generic = await runStage(rt, 'translate', { text: parsed.desc, target, sourceLang: parsed.lang })
           if (generic) { translated = generic.text; provider = generic.provider }
         }
         if (translated) {

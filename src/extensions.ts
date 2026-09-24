@@ -1,24 +1,28 @@
 /**
- * 扩展契约：core 不直接依赖 NSFW/合并/翻译/GIF 实现，而是通过可注入的
- * VideoParserExtensions 调用。宿主可整体替换或按需覆盖单项能力。
+ * 扩展契约：core 完整工作流 + 基线行为；扩展经阶段钩子注入/修改。
  *
- * 默认实现由 extensions 包（@sns-parse/extensions）提供；runtime 会合并默认实现，
- * 因此 core 编排层可直接调用，无需判空。
+ * core 不内建任何扩展实现（NSFW/合并/翻译/GIF），也不依赖扩展包；
+ * 基线行为保证无扩展时全链路可跑（媒体直通、不合并逐张发、GIF 退化发视频、不翻译）。
+ * 扩展导出 WorkflowExtension（含 setup(hooks)），由宿主收集后注入管道。
  */
+import type { ConfigContribution } from './config'
 import type { ParserRuntimeLike } from './host'
+import type { WorkflowHooks } from './workflow/hooks'
 
 export type MediaKind = 'cover' | 'image' | 'avatar' | 'music-cover'
 
 export interface ImageOutcome {
-  /** raw=原图 url；scrambled=混淆 buffer+token；link=仅链接文字；drop=不发送 */
+  /** raw=原图 url 或 buffer 直发；scrambled=混淆 buffer+token；link=只发链接文本；drop=丢弃 */
   kind: 'raw' | 'scrambled' | 'link' | 'drop'
   url?: string
   buffer?: Buffer
   token?: string
+  /** buffer 直发时的 mime（缺省 image/jpeg） */
+  mime?: string
 }
 
 export interface VideoOutcome {
-  /** raw=照发；card=群内纯文字卡片+token（无封面无视频）；link=文字卡片+原链接；drop=仅文字卡片 */
+  /** raw=直发视频；card=群内容易吞 → 暂存+token，无法直发视频；link=只发卡片+原链接；drop=只发卡片 */
   kind: 'raw' | 'card' | 'link' | 'drop'
   url?: string
   token?: string
@@ -35,20 +39,36 @@ export interface GifOptions {
   maxDurationSec: number
 }
 
-/** 扩展能力集合（全部可选；runtime 会与默认实现合并） */
-export interface VideoParserExtensions {
-  /** 同源切图合并；返回 null 表示不合并 */
-  mergeImages?(rt: ParserRuntimeLike, urls: string[]): Promise<{ buffer: Buffer } | null>
-  /** 单张出站图片处理（NSFW 策略） */
-  processImage?(rt: ParserRuntimeLike, platform: string, url: string, kind: MediaKind): Promise<ImageOutcome>
-  /** 出站视频处理（NSFW 策略） */
-  processVideo?(rt: ParserRuntimeLike, platform: string, videoUrl: string, coverUrl: string, meta: { title?: string; author?: string; requesterId: string }): Promise<VideoOutcome>
-  /** 合并图审核；返回 null 表示回退逐张处理 */
-  processMergedImage?(rt: ParserRuntimeLike, platform: string, buffer: Buffer, refUrl: string): Promise<ImageOutcome | null>
-  /** 视频转 GIF；失败返回 null 回退原视频 */
-  mp4ToGif?(rt: ParserRuntimeLike, url: string, durationSec: number, opts: GifOptions): Promise<Buffer | null>
-  /** 文本翻译；失败返回 null */
-  translate?(rt: ParserRuntimeLike, text: string, target: string, sourceLang?: string): Promise<TranslateResult | null>
-  /** 内容安全能力状态（启动日志） */
+export interface VideoMeta {
+  title?: string
+  author?: string
+  requesterId: string
+}
+
+/** 单个扩展片段：能力注册（setup 钩子注入）+ 可选配置贡献/能力位 */
+export interface WorkflowExtension {
+  name: string
+  setup(hooks: WorkflowHooks): void
+  configContribution?: ConfigContribution
   capability?(rt: ParserRuntimeLike): { ferret: boolean; moderation: string | null }
+}
+
+/** 汇总各扩展能力位（日志用） */
+export function collectCapabilities(
+  extensions: WorkflowExtension[] | undefined,
+  rt: ParserRuntimeLike,
+): { ferret: boolean; moderation: string | null } {
+  let ferret = false
+  let moderation: string | null = null
+  for (const e of extensions || []) {
+    if (typeof e.capability !== 'function') continue
+    try {
+      const c = e.capability(rt)
+      if (c?.ferret) ferret = true
+      if (c?.moderation) moderation = c.moderation
+    } catch {
+      // 能力位探测失败不影响主链路
+    }
+  }
+  return { ferret, moderation }
 }

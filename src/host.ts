@@ -9,7 +9,7 @@
  */
 import { silentLogger, type LoggerLike } from './logger'
 import type { OutboundSender } from './sender'
-import type { VideoParserExtensions } from './extensions'
+import type { WorkflowExtension } from './extensions'
 
 export interface VideoParserHost {
   logger: LoggerLike
@@ -20,7 +20,7 @@ export interface VideoParserHost {
   /** 发送层实现（缺省时由宿主适配层注入） */
   sender?: OutboundSender
   /** 扩展实现（部分覆盖；缺省能力由内置实现补齐） */
-  extensions?: VideoParserExtensions
+  extensions?: WorkflowExtension[]
   /** 过渡期：底层上下文（koishi Context 等），core 新代码不应依赖 */
   context?: any
 }
@@ -33,7 +33,7 @@ export interface ParserRuntimeLike {
   config: any
   http: any
   host: VideoParserHost
-  extensions: VideoParserExtensions
+  extensions: WorkflowExtension[]
   [key: string]: any
 }
 

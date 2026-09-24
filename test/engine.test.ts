@@ -12,12 +12,17 @@ import { shouldSkipTranslate, langName } from '../src/engine/translate'
 import { buildAuthHeaders, getPlatformConfig } from '../src/engine/platform-config'
 import { engineConfigContributions } from '../src/engine/config'
 import { linkTypeParser } from '../src/utils/url'
+import { createDefaultPipeline, runStage, ensurePipeline, collectCapabilities, type WorkflowExtension, collectPlatformDefinitions, loadWorkflowExtensions, loadExtensionContributions } from '../src'
 
 let passed = 0
 function check(name: string, fn: () => void): void {
   fn()
   passed++
-  console.log(`  ✓ ${name}`)
+  console.log(`  ? ${name}`)
+}
+const pending: Promise<void>[] = []
+function checkAsync(name: string, fn: () => Promise<void>): void {
+  pending.push((async () => { await fn(); passed++; console.log(`  ? ${name}`) })())
 }
 
 /* ---------- 平台定义聚合 ---------- */
@@ -193,5 +198,97 @@ check('密钥字段带 secret role（config-io 脱敏同源）', () => {
   assert.deepEqual(secrets.sort(), ['apiKey', 'twitterAuthToken', 'twitterCt0'])
 })
 
-console.log(`\n全部通过：${passed} 项`)
+/* ---------- workflow pipeline ---------- */
+console.log('workflow pipeline')
+checkAsync('baseline: no ext = translate null / merge null / transcode null / media passthrough', async () => {
+  const rt: any = { config: {} }
+  rt.pipeline = createDefaultPipeline(rt)
+  assert.equal(await runStage(rt, 'translate', { text: 'x', target: 'zh' }), null)
+  assert.equal(await runStage(rt, 'merge', { urls: ['a', 'b'] }), null)
+  assert.equal(await runStage(rt, 'transcode', { url: 'u', durationSec: 1, opts: { maxWidth: 480, fps: 15, maxDurationSec: 15 } }), null)
+  assert.deepEqual(await runStage(rt, 'media.image', { platform: 'x', url: 'https://i/1.jpg', kind: 'image' }), { kind: 'raw', url: 'https://i/1.jpg' })
+  assert.deepEqual(await runStage(rt, 'media.video', { platform: 'x', videoUrl: 'https://v', coverUrl: '', meta: { requesterId: 'u' } }), { kind: 'raw', url: 'https://v' })
+})
+checkAsync('before/after transform IO; replace wins (last registered)', async () => {
+  const rt: any = { config: {} }
+  const p = createDefaultPipeline(rt)
+  rt.pipeline = p
+  const seen: string[] = []
+  p.before('translate', (input) => { seen.push('before'); return { ...input, text: input.text + '-B' } })
+  p.after('translate', (output) => { seen.push('after'); return { text: (output?.text || '') + '-A', provider: 'x' } })
+  p.replace('translate', (input) => ({ text: input.text + '-R1', provider: 'r1' }))
+  p.replace('translate', (input) => ({ text: input.text + '-R2', provider: 'r2' }))
+  const out = await runStage(rt, 'translate', { text: 'T', target: 'zh' })
+  assert.deepEqual(seen, ['before', 'after'])
+  assert.equal(out.text, 'T-B-R2-A')
+  assert.equal(out.provider, 'x')
+})
+checkAsync('ensurePipeline auto-attaches default pipeline to bare rt', async () => {
+  const bare: any = { config: {} }
+  const p1 = ensurePipeline(bare)
+  const p2 = ensurePipeline(bare)
+  assert.equal(p1, p2)
+  assert.equal(await runStage(bare, 'merge', { urls: ['x'] }), null)
+})
+check('collectCapabilities aggregates extension capability bits', () => {
+  const exts: WorkflowExtension[] = [
+    { name: 'a', setup() {}, capability: () => ({ ferret: true, moderation: null }) },
+    { name: 'b', setup() {}, capability: () => ({ ferret: false, moderation: 'yidun' }) },
+    { name: 'c', setup() {} },
+  ]
+  assert.deepEqual(collectCapabilities(exts, {} as any), { ferret: true, moderation: 'yidun' })
+  assert.deepEqual(collectCapabilities(undefined, {} as any), { ferret: false, moderation: null })
+})
+
+/* ---------- registry: 声明并集/粒度覆盖 ---------- */
+console.log('registry discovery')
+check('platform defs = aggregate union granular (granular overrides)', () => {
+  const fakeReq = ((id: string) => {
+    if (id === '@sns-parse/platforms') return { definitions: [{ type: 'weibo', rules: [/weibo/gi] }, { type: 'bilibili', rules: [/bili/gi] }] }
+    if (id === '@sns-parse/platform-bilibili') return { bilibili: { type: 'bilibili', label: 'granular', rules: [/bili2/gi] } }
+    throw new Error('nf: ' + id)
+  }) as any
+  const defs = collectPlatformDefinitions(fakeReq)
+  assert.equal(defs.length, 2)
+  assert.equal(defs.find(d => d.type === 'bilibili')!.label, 'granular')
+  assert.equal(defs.find(d => d.type === 'weibo')!.type, 'weibo')
+})
+check('missing packages silently absent (scope = loaded union)', () => {
+  const none = ((id: string) => { throw new Error('nf: ' + id) }) as any
+  assert.deepEqual(collectPlatformDefinitions(none), [])
+  assert.deepEqual(loadWorkflowExtensions(none), [])
+  assert.deepEqual(loadExtensionContributions(none), [])
+})
+check('ext discovery yields WorkflowExtension with setup hook', () => {
+  const fakeReq = ((id: string) => {
+    if (id === '@sns-parse/ext-merge') return {
+      mergeExtension: () => ({
+        name: 'ext-merge',
+        setup(hooks: any) { hooks.replace('merge', async () => ({ buffer: Buffer.alloc(1) })) },
+      }),
+    }
+    if (id === '@sns-parse/ext-nsfw') return {
+      nsfwExtension: () => ({ name: 'ext-nsfw', setup(hooks: any) { hooks.replace('media.image', async (i: any) => ({ kind: 'raw', url: i.url })) } }),
+      nsfwConfigContribution: { group: 'nsfw', fields: [] },
+    }
+    throw new Error('nf: ' + id)
+  }) as any
+  const exts = loadWorkflowExtensions(fakeReq)
+  assert.equal(exts.length, 2)
+  assert.equal(exts[0].name, 'ext-nsfw')
+  assert.ok(exts[0].configContribution)
+  assert.equal(loadExtensionContributions(fakeReq).length, 1)
+  // 钩子注入生效：merge 被替换
+  const rt: any = { config: {} }
+  rt.pipeline = createDefaultPipeline(rt)
+  for (const e of exts) e.setup(rt.pipeline)
+  return runStage(rt, 'merge', { urls: ['a', 'b'] }).then((m: any) => assert.ok(m.buffer))
+})
+
+void Promise.all(pending).then(() => {
+  console.log(`\n全部通过：${passed} 项`)
+}).catch((e) => {
+  console.error(e)
+  process.exit(1)
+})
 
