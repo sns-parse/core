@@ -7,8 +7,7 @@ import { delay, getErrorMessage } from '../utils/common'
 import { generateFormattedText } from '../utils/format'
 import { parseApiResponse } from './parser'
 import { getPlatformConfig, buildAuthHeaders } from './platform-config'
-import { parseTwitter, fetchGrokTranslation } from './twitter'
-import { shouldSkipTranslate, translateText } from './translate'
+import { shouldSkipTranslate } from './translate'
 import { tlsGet } from '../utils/tls-client'
 import { NEW_GATEWAY_PRIMARY, LEGACY_GATEWAY_PRIMARY, LEGACY_GATEWAY_BACKUP } from './gateway'
 
@@ -23,34 +22,34 @@ export async function fetchApi(rt: ParserRuntime, url: string, type: string, fie
 
   const { apiUrl: dedicatedUrl, dedicatedFirst, apiKey, authHeaderType, customHeaderName, customProxy } = platformConf || getPlatformConfig(rt, type)
 
-  // X / Twitter：统一网关均走原生 syndication 解析（除非用户自定义了 API）
-  if (type === 'twitter' && !dedicatedUrl) {
-    debugLog('twitter 走原生 syndication 解析:', url)
-    const twCreds = (config.twitterAuthToken && config.twitterCt0)
-      ? { authToken: String(config.twitterAuthToken), ct0: String(config.twitterCt0) }
-      : undefined
+  // 平台原生解析钩子（如 X/Twitter 的 syndication/GraphQL）：实现由平台包提供，
+  // 用户自定义专属 API 时优先专属 API。core 只调度，不持有平台实现。
+  const nativeDef = (rt.defs || []).find(d => d.type === type && typeof d.parse === 'function')
+  if (nativeDef && nativeDef.parse && !dedicatedUrl) {
+    debugLog(`${type} 走平台原生解析（${nativeDef.label || nativeDef.type}）:`, url)
     // 代理串通：axios 走 runtime 实例；tlsget-rs（GraphQL/Grok 翻译）显式透传代理地址
     const tlsProxy = (proxyConfig.enabled && proxyConfig.host)
       ? `${proxyConfig.protocol || 'http'}://${proxyConfig.auth?.username ? `${encodeURIComponent(proxyConfig.auth.username)}:${encodeURIComponent(proxyConfig.auth.password || '')}@` : ''}${proxyConfig.host}:${proxyConfig.port || 7890}`
       : undefined
     const tlsGetWithProxy = (u: string, o: any) => tlsGet(u, { ...o, proxy: tlsProxy })
-    const parsed = await parseTwitter(url, http, twCreds, tlsGetWithProxy)
-    // 推文翻译：目标语种与推文语种相同时跳过；Grok（需登录态）优先，通用翻译兜底
+    const ctx = { http, config, getGraphql: tlsGetWithProxy }
+    const parsed = await nativeDef.parse(url, ctx)
+    // 推文翻译：目标语种与推文语种相同时跳过；平台原生翻译（Grok，需登录态）优先，通用翻译兜底
     if (config.tweetTranslateEnabled && parsed.desc) {
       const target = config.tweetTranslateLang || 'zh'
       if (!shouldSkipTranslate(parsed.lang, target)) {
         let translated: string | null = null
         let provider = ''
-        if (twCreds) {
-          const grok = await fetchGrokTranslation(url, target, twCreds, tlsGetWithProxy).catch(() => null)
-          if (grok) {
-            translated = grok.text
-            provider = 'Grok'
-            if (!parsed.lang && grok.sourceLang) parsed.lang = grok.sourceLang
-          }
+        const nativeTr = typeof nativeDef.translate === 'function'
+          ? await nativeDef.translate(ctx, url, parsed.desc, target).catch(() => null)
+          : null
+        if (nativeTr) {
+          translated = nativeTr.text
+          provider = 'Grok'
+          if (!parsed.lang && nativeTr.sourceLang) parsed.lang = nativeTr.sourceLang
         }
         if (!translated) {
-          const generic = await translateText(rt, parsed.desc, target, parsed.lang)
+          const generic = await rt.extensions.translate?.(rt, parsed.desc, target, parsed.lang)
           if (generic) { translated = generic.text; provider = generic.provider }
         }
         if (translated) {

@@ -4,7 +4,8 @@
  * 平台定义列表（defs）由调用方传入：
  * - koishi 兼容层传内置 BUILTIN_PLATFORMS（本地 definitions）
  * - CLI 传 collectPlatformDefinitions()（已安装的 @sns-parse/platform-*）
- * 默认扩展实现同样注入：koishi 传含 NSFW 的完整默认实现，CLI 传 createCoreExtensions()。
+ * 默认扩展实现同样由宿主注入（loadExtensionImplementations() 发现已安装 ext-*）；
+ * core 只负责调度，不持有任何功能实现。
  */
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios'
 import { HttpsProxyAgent } from 'https-proxy-agent'
@@ -17,9 +18,6 @@ import { SimpleLRUCache } from '../utils/cache'
 import { parseFieldMapping } from '../utils/field-mapping'
 import { buildCustomLinkRules } from './platform-config'
 import { dedicatedApisFrom, type DedicatedApiMaps } from './gateway'
-import { mergeImages } from '../utils/merge'
-import { mp4ToGif } from '../utils/gif'
-import { translateText } from './translate'
 
 export interface ParserRuntime {
   /** 宿主抽象（core 统一入口） */
@@ -35,6 +33,8 @@ export interface ParserRuntime {
   contentDedupCache: SimpleLRUCache<number>
   customPlatforms: CustomPlatformConfig[]
   allRules: { pattern: RegExp; type: string }[]
+  /** 平台定义列表（原生解析/翻译钩子由 fetcher 查找使用） */
+  defs: PlatformDefinition[]
   /** 平台专属端点映射（由 defs 计算；getPlatformConfig 使用） */
   dedicatedApis: DedicatedApiMaps
   /** 扩展能力（默认实现 + 宿主覆盖） */
@@ -105,16 +105,8 @@ export function createRuntime(source: any, config: any, opts: CreateRuntimeOptio
     contentDedupCache,
     customPlatforms,
     allRules,
+    defs,
     dedicatedApis,
     extensions,
-  }
-}
-
-/** core 自带扩展实现（无 NSFW：CLI / 嵌入式宿主用；koishi 层在其上叠加 NSFW） */
-export function createCoreExtensions(): VideoParserExtensions {
-  return {
-    mergeImages,
-    mp4ToGif,
-    translate: translateText,
   }
 }
