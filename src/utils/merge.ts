@@ -34,6 +34,12 @@ const COL_LEN = 64
 /** 接缝差异 / 内部自然差异 的判定阈值（母图切片 ≈1，无关图片 ≫1；下限 3 防平坦图除零） */
 const BOUNDARY_THRESH = 3.0
 const MAD_FLOOR = 3.0
+/** 单缝边界容差：平台（如 X）对各分片独立重压缩会让个别接缝低频轻微错位。
+ *  仅当接缝总数 ≥3（≥4 图，多条缝相互印证）且恰好一条落在
+ *  [BOUNDARY_THRESH, BORDERLINE_THRESH)、其余全部通过时放行；平坦不可验证缝不参与容差 */
+const BORDERLINE_THRESH = 5.0
+const BORDERLINE_MAX = 1
+const BORDERLINE_MIN_SEAMS = 3
 /** 边界带纹理能量下限：低于此值视为「不可验证接缝」（相似背景/平边照片会骗过亮度对比） */
 const TEXTURE_MIN = 4.0
 
@@ -215,7 +221,10 @@ function seamVerdictH(a: Buffer, b: Buffer, from: number, to: number): SeamVerdi
   )
 }
 
-/** 内容验证：所有接缝（趋势+纹理）均通过才成立；返回最大接缝比值与逐缝证据 */
+/** 内容验证：所有接缝（趋势+纹理）均通过才成立；接缝总数 ≥3 时允许至多一条
+ *  「边界容差缝」（比值 ∈ [3,5)——平台独立重压缩的典型错位幅度；多条缝相互
+ *  印证才可信，2 缝场景证据不足不放行；平坦不可验证缝不参与容差）。
+ *  返回最大接缝比值与逐缝证据。 */
 export function verifyLayout(layout: MergeLayout, grays: Buffer[]): { pass: boolean; score: number; seams: SeamVerdict[] } {
   const seams: SeamVerdict[] = []
   const n = grays.length
@@ -232,7 +241,11 @@ export function verifyLayout(layout: MergeLayout, grays: Buffer[]): { pass: bool
   }
   if (!seams.length) return { pass: false, score: Infinity, seams }
   const worst = Math.max(...seams.map((v) => v.score))
-  return { pass: seams.every((v) => v.ok), score: worst, seams }
+  const failed = seams.filter((v) => !v.ok)
+  const borderline = failed.filter((v) => v.score < BORDERLINE_THRESH)
+  const pass = seams.every((v) => v.ok)
+    || (seams.length >= BORDERLINE_MIN_SEAMS && borderline.length <= BORDERLINE_MAX && failed.length === borderline.length)
+  return { pass, score: worst, seams }
 }
 
 /** 内容识别：候选布局逐一经接缝连续性验证，取通过者中比值最小的一个 */
@@ -259,9 +272,10 @@ export function pickMergeLayout(sizes: ImageSize[], grays: Buffer[]): { layout: 
   let best: { layout: MergeLayout; score: number; seams: SeamVerdict[] } | null = null
   for (const c of candidates) {
     const { pass, score, seams } = verifyLayout(c, grays)
+    const tolerated = seams.filter((v) => !v.ok).length
     const detail = seams.map((v) =>
       `[${v.dir === 'V' ? '竖' : '横'}缝 ${v.from}→${v.to}] ${v.reason}`).join('；')
-    debugLog(`同源合并证据·${layoutName(c)}：${pass ? '通过' : '拒绝'}，worst=${score === Infinity ? '∞' : score.toFixed(2)} ⟶ ${detail}`)
+    debugLog(`同源合并证据·${layoutName(c)}：${pass ? '通过' : '拒绝'}${pass && tolerated ? `（含 ${tolerated} 条边界容差缝）` : ''}，worst=${score === Infinity ? '∞' : score.toFixed(2)} ⟶ ${detail}`)
     if (pass && (!best || score < best.score)) best = { layout: c, score, seams }
   }
   if (best) debugLog(`同源合并裁决：${layoutName(best.layout)}（证据最强，worst 接缝比值 ${best.score.toFixed(2)}）`)
