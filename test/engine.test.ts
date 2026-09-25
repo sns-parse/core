@@ -12,7 +12,7 @@ import { shouldSkipTranslate, langName } from '../src/engine/translate'
 import { buildAuthHeaders, getPlatformConfig } from '../src/engine/platform-config'
 import { engineConfigContributions } from '../src/engine/config'
 import { linkTypeParser } from '../src/utils/url'
-import { createDefaultPipeline, runStage, ensurePipeline, collectCapabilities, type WorkflowExtension, collectPlatformDefinitions, loadWorkflowExtensions, loadExtensionContributions } from '../src'
+import { createDefaultPipeline, runStage, ensurePipeline, collectCapabilities, type WorkflowExtension, collectPlatformDefinitions, loadWorkflowExtensions, loadExtensionContributions, extractAllUrlsFromMessage } from '../src'
 
 let passed = 0
 function check(name: string, fn: () => void): void {
@@ -261,6 +261,25 @@ check('collectCapabilities aggregates extension capability bits', () => {
 
 /* ---------- registry: 声明并集/粒度覆盖 ---------- */
 console.log('registry discovery')
+check('卡片消息 URL 抽取：json 卡（Koishi attrs.data / 旧式 elem.data 双形态）', () => {
+  const rules = [{ pattern: /https?:\/\/(?:www\.|m\.)?xiaohongshu\.com\/discovery\/item\/[0-9a-zA-Z_\/-]+(?:\?[^\s'"“”<>]*)?/gi, type: 'xiaohongshu' }]
+  const jump = 'https://www.xiaohongshu.com/discovery/item/6aad62df000000002502fa35?xsec_token=CB83AFeZ%3D&xsec_source=app_share'
+  const card = JSON.stringify({ app: 'com.tencent.structmsg', desc: '那是林间的精灵', meta: { news: { jump_url: jump, preview: 'https://sns-webpic/1.jpg' } } })
+  const koishiForm = extractAllUrlsFromMessage({ elements: [{ type: 'json', attrs: { data: card } }] }, rules)
+  assert.equal(koishiForm.length, 1)
+  assert.ok(koishiForm[0].url.includes('xsec_token='))
+  const legacyForm = extractAllUrlsFromMessage({ elements: [{ type: 'json', data: card }] }, rules)
+  assert.equal(legacyForm.length, 1)
+  assert.ok(legacyForm[0].url.includes('xsec_token='))
+})
+check('卡片消息 URL 抽取：xml 卡 + 非 JSON 文本兜底', () => {
+  const rules = [{ pattern: /https?:\/\/xhslink\.(?:com|cn)\/[0-9a-zA-Z_\/-]+/gi, type: 'xiaohongshu' }]
+  const xml = extractAllUrlsFromMessage({ elements: [{ type: 'xml', attrs: { data: '<xml><url>https://xhslink.cn/o/47SAd6Ysq7Z</url></xml>' } }] }, rules)
+  assert.equal(xml.length, 1)
+  assert.equal(xml[0].url, 'https://xhslink.cn/o/47SAd6Ysq7Z')
+  const broken = extractAllUrlsFromMessage({ elements: [{ type: 'json', attrs: { data: 'not-json but has https://xhslink.com/o/abc123DEF' } }] }, rules)
+  assert.equal(broken.length, 1)
+})
 check('platform defs = aggregate union granular (granular overrides)', () => {
   const fakeReq = ((id: string) => {
     if (id === '@sns-parse/platforms') return { definitions: [{ type: 'weibo', rules: [/weibo/gi] }, { type: 'bilibili', rules: [/bili/gi] }] }

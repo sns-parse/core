@@ -44,10 +44,14 @@ export function extractAllUrlsFromMessage(session: any, rules: { pattern: RegExp
   const cardsContent: string[] = []
   if (session.elements) {
     for (const elem of session.elements) {
-      if (elem.type === 'xml' && elem.data) cardsContent.push(elem.data)
-      else if (elem.type === 'json' && elem.data) {
+      // Koishi 元素属性在 elem.attrs（onebot json/xml 分享卡：h.json/h.xml → attrs.data）
+      const data: string | undefined = elem.attrs?.data ?? elem.data
+      if (typeof data !== 'string' || !data) continue
+      if (elem.type === 'xml') {
+        cardsContent.push(data)
+      } else if (elem.type === 'json') {
         try {
-          const json = JSON.parse(elem.data)
+          const json = JSON.parse(data)
           const extract = (obj: any) => {
             if (!obj || typeof obj !== 'object') return
             for (const val of Object.values(obj)) {
@@ -56,7 +60,10 @@ export function extractAllUrlsFromMessage(session: any, rules: { pattern: RegExp
             }
           }
           extract(json)
-        } catch {}
+        } catch {
+          // 非 JSON 文本仍按原文扫一遍
+          cardsContent.push(data)
+        }
       }
     }
   }
