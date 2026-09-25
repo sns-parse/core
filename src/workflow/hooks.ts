@@ -13,9 +13,11 @@ import type { ParsedData } from '../types'
 import type { ImageOutcome, VideoOutcome, TranslateResult, GifOptions, MediaKind, VideoMeta } from '../extensions'
 import type { ProcessedItem, MessageUnit } from '../engine/compose'
 import type { OutboundSender, SessionLike } from '../sender'
+import type { GenericLinkInput, GenericLinkResult } from '../engine/generic'
 
 export type StageName =
   | 'parse'
+  | 'parse.generic'
   | 'translate'
   | 'media.image'
   | 'media.video'
@@ -82,6 +84,7 @@ export interface SendInput {
 
 export interface StageIO {
   parse: { input: ParseInput; output: ParsedData }
+  'parse.generic': { input: GenericLinkInput; output: GenericLinkResult | null }
   translate: { input: TranslateInput; output: TranslateResult | null }
   'media.image': { input: MediaImageInput; output: ImageOutcome }
   'media.video': { input: MediaVideoInput; output: VideoOutcome }

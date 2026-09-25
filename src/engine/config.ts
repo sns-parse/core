@@ -274,5 +274,15 @@ export function engineConfigContributions(): ConfigContribution[] {
         { key: 'deduplicationTipText', type: 'string', default: '链接 ${url} 在最近 ${interval} 秒内已解析过，已跳过。', description: '重复解析提示，支持变量 ${url} ${interval}' },
       ],
     }),
+
+    defineConfig({
+      group: '通用链接解析（预留）',
+      fields: [
+        { key: 'genericParseEnabled', type: 'boolean', default: false, description: '对未命中平台声明的链接启用通用解析（预留：暂无实现，开启不生效）' },
+        { key: 'genericLlmBaseUrl', type: 'string', default: '', description: 'LLM 接口 Base URL（OpenAI 兼容格式；预留字段，暂不消费）' },
+        { key: 'genericLlmModel', type: 'string', default: '', description: 'LLM 模型名（预留字段，暂不消费）' },
+        { key: 'genericLlmApiKey', type: 'string', default: '', role: 'secret', description: 'LLM API Key（预留字段，暂不消费）' },
+      ],
+    }),
   ]
 }

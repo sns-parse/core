@@ -169,8 +169,16 @@ console.log('engineConfigContributions')
 check('组序与组名稳定（koishi UI 按「发送策略」后插入动态声明）', () => {
   assert.deepEqual(engineConfigContributions().map(c => c.group), [
     '消息格式', '媒体发送', '音乐语音（需 silk 和 ffmpeg）', 'GIF 转换', '性能与限制', '发送策略',
-    '网络与请求', '发送与重试', '缓存与临时文件', 'API 与平台', '界面文本',
+    '网络与请求', '发送与重试', '缓存与临时文件', 'API 与平台', '界面文本', '通用链接解析（预留）',
   ])
+})
+check('通用解析预留组：开关默认关 + LLM 字段带 secret', () => {
+  const g = engineConfigContributions().find(c => c.group === '通用链接解析（预留）')!
+  const d = defaultsFromContributions([g])
+  assert.equal(d.genericParseEnabled, false)
+  assert.equal(d.genericLlmBaseUrl, '')
+  const secret = g.fields.filter(f => f.role === 'secret').map(f => f.key)
+  assert.deepEqual(secret, ['genericLlmApiKey'])
 })
 check('默认值表含引擎关键键', () => {
   const d = defaultsFromContributions(engineConfigContributions())
@@ -195,7 +203,7 @@ check('默认值表含引擎关键键', () => {
 })
 check('密钥字段带 secret role（config-io 脱敏同源）', () => {
   const secrets = engineConfigContributions().flatMap(c => c.fields).filter(f => f.role === 'secret').map(f => f.key)
-  assert.deepEqual(secrets.sort(), ['apiKey', 'twitterAuthToken', 'twitterCt0'])
+  assert.deepEqual(secrets.sort(), ['apiKey', 'genericLlmApiKey', 'twitterAuthToken', 'twitterCt0'])
 })
 
 /* ---------- workflow pipeline ---------- */
@@ -229,6 +237,17 @@ checkAsync('ensurePipeline auto-attaches default pipeline to bare rt', async () 
   const p2 = ensurePipeline(bare)
   assert.equal(p1, p2)
   assert.equal(await runStage(bare, 'merge', { urls: ['x'] }), null)
+})
+checkAsync('parse.generic 预留：基线 null，replace 可注入', async () => {
+  const rt: any = { config: {} }
+  rt.pipeline = createDefaultPipeline(rt)
+  assert.equal(await runStage(rt, 'parse.generic', { url: 'https://example.com/x' }), null)
+  rt.pipeline.replace('parse.generic', async (input: any) => ({
+    title: 'T', desc: 'D', images: ['https://example.com/i.jpg'], source: 'og',
+  }))
+  const out = await runStage(rt, 'parse.generic', { url: 'https://example.com/x' })
+  assert.equal(out!.source, 'og')
+  assert.equal(out!.images.length, 1)
 })
 check('collectCapabilities aggregates extension capability bits', () => {
   const exts: WorkflowExtension[] = [

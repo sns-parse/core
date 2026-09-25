@@ -32,6 +32,9 @@ async function sendDispatch(rt: any, input: SendInput): Promise<void> {
 export function createDefaultPipeline(rt: any): Pipeline {
   const p = new Pipeline(rt)
   p.replace('parse', (input, r) => fetcher.fetchApi(r, input.url, input.type, input.fieldMapping, input.platformConf))
+  // 通用链接解析（预留）：基线=未实现（null）——非平台链接不进入解析流程；
+  // 后续由宿主/扩展 replace 注入（OG/HTML/LLM，契约见 engine/generic.ts）
+  p.replace('parse.generic', async () => null)
   p.replace('translate', async () => null)
   p.replace('media.image', async (input) => ({ kind: 'raw', url: input.url } as ImageOutcome))
   p.replace('media.video', async (input) => ({ kind: 'raw', url: input.videoUrl } as VideoOutcome))
