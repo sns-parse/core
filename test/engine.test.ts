@@ -12,7 +12,7 @@ import { shouldSkipTranslate, langName } from '../src/engine/translate'
 import { buildAuthHeaders, getPlatformConfig } from '../src/engine/platform-config'
 import { engineConfigContributions } from '../src/engine/config'
 import { linkTypeParser } from '../src/utils/url'
-import { createDefaultPipeline, runStage, ensurePipeline, collectCapabilities, type WorkflowExtension, collectPlatformDefinitions, loadWorkflowExtensions, loadExtensionContributions, extractAllUrlsFromMessage } from '../src'
+import { createDefaultPipeline, runStage, ensurePipeline, collectCapabilities, type WorkflowExtension, collectPlatformDefinitions, loadWorkflowExtensions, loadExtensionContributions, installedFragments, extractAllUrlsFromMessage } from '../src'
 
 let passed = 0
 function check(name: string, fn: () => void): void {
@@ -257,6 +257,14 @@ check('collectCapabilities aggregates extension capability bits', () => {
   ]
   assert.deepEqual(collectCapabilities(exts, {} as any), { ferret: true, moderation: 'yidun' })
   assert.deepEqual(collectCapabilities(undefined, {} as any), { ferret: false, moderation: null })
+})
+
+check('installedFragments：已装碎片清单（含 core，版本剥离 build 段）', () => {
+  const frags = installedFragments()
+  const names = frags.map(f => f.name)
+  assert.ok(names.includes('core'))
+  const core = frags.find(f => f.name === 'core')!
+  assert.ok(/^\d+\.\d+\.\d+/.test(core.version) && !core.version.includes('+'))
 })
 
 /* ---------- registry: 声明并集/粒度覆盖 ---------- */

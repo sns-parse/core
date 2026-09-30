@@ -107,3 +107,40 @@ export function loadExtensionContributions(anchor?: NodeRequire): ConfigContribu
 export function loadExtensionImplementations(anchor?: NodeRequire): WorkflowExtension[] {
   return loadWorkflowExtensions(anchor)
 }
+
+export interface InstalledFragment { name: string; version: string }
+
+/**
+ * 已安装碎片清单（core + 聚合×2 + 平台 + 扩展，版本剥离 build 段）。
+ * 诊断用：CLI/宿主启动时打印版本戳，一眼识别 dlx/缓存环境是否陈旧。
+ */
+export function installedFragments(anchor?: NodeRequire): InstalledFragment[] {
+  const nodeRequire = req(anchor)
+  const readVersion = (name: string): string => {
+    try {
+      const pkg = nodeRequire(`${name}/package.json`)
+      return String(pkg?.version || '').split('+')[0]
+    } catch {
+      // core 自身（core 仓开发/测试环境）：core 不是自己的依赖，回退读自身 package.json
+      // （registry.ts 位于 src/ 或 lib/，../package.json 即 core 包根）
+      if (name === '@sns-parse/core') {
+        try {
+          const pkg = nodeRequire('../package.json')
+          if (String(pkg?.name || '') === '@sns-parse/core') return String(pkg?.version || '').split('+')[0]
+        } catch { /* ignore */ }
+      }
+      return ''
+    }
+  }
+  const names = [
+    '@sns-parse/core', '@sns-parse/platforms', '@sns-parse/extensions',
+    ...PLATFORM_TYPES.map(t => `@sns-parse/platform-${t}`),
+    ...EXTENSION_SPECS.map(s => `@sns-parse/${s.name}`),
+  ]
+  const out: InstalledFragment[] = []
+  for (const name of names) {
+    const v = readVersion(name)
+    if (v) out.push({ name: name.replace('@sns-parse/', ''), version: v })
+  }
+  return out
+}
