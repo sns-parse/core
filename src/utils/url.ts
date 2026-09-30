@@ -6,6 +6,8 @@ export function cleanUrl(url: string): string {
             .replace(/&lt;/g, '<')
             .replace(/&gt;/g, '>')
             .replace(/\\\//g, '/')
+  // QQ 分享卡片 jump_url 自带的 ",preview:<预览图 URL>" 后缀（与主链接连成一段无空白文本）剥离
+  url = url.replace(/,preview:https?:\/\/\S+$/i, '')
   url = url.replace(/^[\s"'<（(“”‘’]+/, '')
   url = url.replace(/[\s"'<>\{\}\[\]`,;，。！？：；“”‘’…—～.()）]+$/, '')
   // 剔除链接后残留的 XML/HTML 标签片段（如卡片消息里的 <op>…（上游 v1.6.7）

@@ -46,15 +46,33 @@ async function processItem(rt: ParserRuntime, session: any, platform: string, te
   const requesterId = String(session?.userId || 'unknown')
   const images: ImageOutcome[] = []
   // 同源切图合并：四宫格/九宫格/n×n 宫格与水平/垂直切分条带识别为一张母图的分片，合成后发送；
+  // 支持部分可拼接（可合并子集成组、独立图逐张）与乱序输入（ext-merge ≥ 0.3.0-alpha.2）；
   // 识别失败 / ffmpeg 不可用 / 审核 fail-closed → 回退逐张处理
   let mergedSent = false
+  const leftoverUrls: string[] = []
   if (rt.config.mergeSameOriginImages !== false && (parsed.images || []).length >= 2) {
     try {
       const merged = await runStage(rt, 'merge', { urls: parsed.images })
       if (merged) {
-        const outcome = await runStage(rt, 'media.merged', { platform, buffer: merged.buffer, refUrl: parsed.images[0] })
-        if (outcome) { images.push(outcome); mergedSent = true }
-        else debugLog('合并图未过内容安全策略，回退逐张处理')
+        // 新契约：{ groups: [{buffer, urls}], leftoverUrls }；旧契约（单组全量）兼容为 groups[0]
+        const rawGroups: { buffer: Buffer; urls: string[] }[] = Array.isArray((merged as any).groups)
+          ? (merged as any).groups
+          : (merged as any).buffer ? [{ buffer: (merged as any).buffer, urls: parsed.images }] : []
+        const consumed = new Set<string>()
+        for (const g of rawGroups) {
+          if (!g?.buffer) continue
+          const outcome = await runStage(rt, 'media.merged', { platform, buffer: g.buffer, refUrl: g.urls?.[0] || parsed.images[0] })
+          if (outcome) {
+            images.push(outcome)
+            for (const u of g.urls || []) consumed.add(u)
+          } else {
+            debugLog('合并图未过内容安全策略，该组回退逐张处理')
+          }
+        }
+        if (consumed.size) {
+          mergedSent = true
+          for (const u of parsed.images) if (!consumed.has(u)) leftoverUrls.push(u)
+        }
       }
     } catch (e: any) {
       debugLog(`切图合并跳过（${e?.message || e}）`)
@@ -62,6 +80,10 @@ async function processItem(rt: ParserRuntime, session: any, platform: string, te
   }
   if (!mergedSent) {
     for (const url of (parsed.images || []) as string[]) {
+      images.push(await runStage(rt, 'media.image', { platform, url, kind: 'image' }))
+    }
+  } else {
+    for (const url of leftoverUrls) {
       images.push(await runStage(rt, 'media.image', { platform, url, kind: 'image' }))
     }
   }

@@ -63,7 +63,18 @@ export interface MergeInput {
   urls: string[]
 }
 
-export type MergeResult = { buffer: Buffer; layout?: any } | null
+/** 单个合并组（buffer + 组内分片 URL，按检测出的正确顺序） */
+export interface MergeGroupOutput {
+  buffer: Buffer
+  layout?: any
+  urls?: string[]
+}
+
+/**
+ * merge 阶段输出：分组契约（ext-merge ≥ 0.3.0-alpha.2，部分可拼接 + 乱序重排）
+ * 或旧单组契约（整组合一，ext-merge < 0.3.0-alpha.2）；无可合并组 → null。
+ */
+export type MergeResult = { groups: MergeGroupOutput[]; leftoverUrls?: string[] } | { buffer: Buffer; layout?: any } | null
 
 export interface TranscodeInput {
   url: string
